@@ -4,7 +4,7 @@ import pybullet_data
 # 1) connect and load the Panda URDF
 p.connect(p.GUI)
 p.setAdditionalSearchPath(pybullet_data.getDataPath())
-robot_id = p.loadURDF("franka_panda/panda.urdf", useFixedBase=True)
+robot_id = p.loadURDF("panda_with_sensor.urdf", useFixedBase=True)
 
 # 2) find out how many joints
 num_joints = p.getNumJoints(robot_id)

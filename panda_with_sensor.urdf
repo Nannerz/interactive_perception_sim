@@ -228,8 +228,29 @@
     <child link="panda_link8"/>
     <axis xyz="0 0 0"/>
   </joint>
+
+  <!-- 1. Zero‑mass sensor link -->
+  <link name="panda_wrist_sensor_link">
+  <inertial>
+      <mass value="0.001"/> <!-- almost zero -->
+      <inertia
+      ixx="1e-6" ixy="0" ixz="0"
+      iyy="1e-6" iyz="0"
+      izz="1e-6"/>
+  </inertial>
+  <!-- no visuals or collisions needed -->
+  </link>
+  
+  <!-- 2. Fixed joint from panda_link7 → sensor link -->
+  <joint name="wrist_sensor_joint" type="fixed">
+  <parent link="panda_link7"/>
+  <child  link="panda_wrist_sensor_link"/>
+  <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
   <joint name="panda_hand_joint" type="fixed">
-    <parent link="panda_link8"/>
+   <!-- <parent link="panda_link8"/> -->
+    <parent link="panda_wrist_sensor_link"/>
     <child link="panda_hand"/>
     <origin rpy="0 0 -0.785398163397" xyz="0 0 0"/>
   </joint>

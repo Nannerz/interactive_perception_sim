@@ -1,18 +1,16 @@
-import json
+import json, os
 import tkinter as tk
 from tkinter import ttk
-import os
-import threading
 
-class Position_GUI_Thread(threading.Thread):
-    def __init__(self, refresh_ms=100, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self.daemon = True
-        self.interval = 0.01
-        self.gui = Position_GUI(refresh_ms=refresh_ms)
+# class Position_GUI_Thread(threading.Thread):
+#     def __init__(self, refresh_ms=100, **kwargs) -> None:
+#         super().__init__(**kwargs)
+#         self.daemon = True
+#         self.interval = 0.01
+#         self.gui = Position_GUI(refresh_ms=refresh_ms)
 
-    def run(self):
-        self.gui.mainloop()
+#     def run(self):
+#         self.gui.mainloop()
         
 class Position_GUI(tk.Tk):
     def __init__(self, refresh_ms=100, **kwargs) -> None:
@@ -47,5 +45,5 @@ class Position_GUI(tk.Tk):
         self.after(self.refresh_ms, self._update)
     
 if __name__ == "__main__":
-    # main()
-    Position_GUI_Thread().run()
+    Position_GUI(refresh_ms=100).mainloop()
+    # Position_GUI_Thread().run()
