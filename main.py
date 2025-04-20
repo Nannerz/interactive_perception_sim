@@ -9,15 +9,20 @@ import sys
 import signal
 import atexit
 import os
+import json
 
 # -----------------------------------------------------------------------------------------------------------
 class InteractPerceive:
     def __init__(self):
         super().__init__()
         self.robot = None
-        self.filename = "ft_data.csv"
-        self.path = os.path.dirname(os.path.abspath(__file__))
+        self.data_path = os.path.dirname(os.path.abspath(__file__))
+        self.ft_file = os.path.join(self.data_path, "ft_data.csv")
+        self.pos_file = os.path.join(self.data_path, "pos.json")
         self.ft_names = ["fx", "fy", "fz", "tx", "ty", "tz"]
+        self.wrist_joint = 7 # joint before the gripper
+        self.finger_joints = [9, 10]
+        self.ee_link_index = 11 # Panda “tool” link for IK
         self.num_joints = 7
         self.fieldnames = [f"{name}_{j}" for j in range(1, self.num_joints+1) for name in self.ft_names]
         self.ft = {
@@ -25,6 +30,8 @@ class InteractPerceive:
             for j in range(1, self.num_joints+1)
             for name in self.ft_names
         }
+        self.position_text = None
+        self.orientation_text = None
         
     def init_sim(self):
         p.connect(p.GUI)
@@ -37,12 +44,14 @@ class InteractPerceive:
                                           cameraTargetPosition=[0.5, 0, 0.2])
         p.loadURDF("plane.urdf") # ground plane
 
-        urdf_dir = os.path.join(self.path, "panda_with_sensor.urdf")
+        urdf_dir = os.path.join(self.data_path, "panda_with_sensor.urdf")
         print(f"Loading URDF from: {urdf_dir}")
         self.robot = p.loadURDF(urdf_dir,
                                 basePosition=[0, 0, 0],
                                 baseOrientation=p.getQuaternionFromEuler([0, 0, 0]),
                                 useFixedBase=True)
+        for i in range(7):
+            p.enableJointForceTorqueSensor(self.robot, i, 1)
         self.create_object()
         
     def create_object(self):
@@ -57,25 +66,15 @@ class InteractPerceive:
                                 basePosition=[0.5, 0, 0.05])
 
     # Initialize CSV file with headers, overwrites/deletes existing file with the same name
-    def initialize_plot_file(self, filename: str = None, fieldnames: list = None):
-        if filename is None:
-            filename = self.filename
-        if fieldnames is None:
-            fieldnames = self.fieldnames
-            
-        with open(filename, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+    def initialize_plot_file(self):
+        with open(self.ft_file, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=self.fieldnames)
             writer.writeheader()
 
     # Write joint index & force/torque readings to CSV file
-    def write_to_csv(self, data_dict: dict, filename: str = None, fieldnames: list = None):
-        if filename is None:
-            filename = self.filename
-        if fieldnames is None:
-            fieldnames = self.fieldnames
-            
-        with open(filename, "a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+    def write_to_csv(self, data_dict: dict):
+        with open(self.ft_file, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=self.fieldnames)
             writer.writerow(data_dict)
             
     def get_forces(self):
@@ -86,14 +85,47 @@ class InteractPerceive:
                 self.ft[f"{name}_{joint + 1}"] = val
         
         return self.ft
+    
+    def get_joint_positions(self):
+        joint_positions = []
+        for joint in range(0, self.num_joints):
+            joint_state = p.getJointState(self.robot, joint)
+            joint_positions.append(joint_state[0])
+        return joint_positions
+    
+    # Write current world frame positions of end effector to pos_file
+    def write_wf_position_to_file(self):
+        link_state = p.getLinkState(self.robot, self.ee_link_index)
+        ee_position_wf = link_state[4]  # world frame position of the end effector
+        ee_orientation_wf = p.getEulerFromQuaternion(link_state[5])  # world frame orientation of the end effector
+        
+        pos = {
+            "x": ee_position_wf[0],
+            "y": ee_position_wf[1],
+            "z": ee_position_wf[2],
+            "roll": ee_orientation_wf[0],
+            "pitch": ee_orientation_wf[1],
+            "yaw": ee_orientation_wf[2]
+        }
+        
+        with open(self.pos_file, "w") as f:
+            json.dump(pos, f)
+
+    def reset_pose(self, position, orientation):
+        ik_vals = p.calculateInverseKinematics(self.robot,
+                                            self.ee_link_index,
+                                            position,
+                                            orientation,
+                                            maxNumIterations=1000,
+                                            residualThreshold=1e-5)
+        
+        for i in range(7):
+            p.resetJointState(self.robot, i, ik_vals[i])
 
 # -----------------------------------------------------------------------------------------------------------
 
 '''
-start_plotter
-
-Starts the plotter.py script that plots forces on each joint
-Registers cleanup function on exit to kill the plot process
+start_plotter: Starts the plotter.py script that plots forces on each joint
 '''
 def start_plotter():
     plotter_path = os.path.join(os.path.dirname(__file__), "plotter.py")
@@ -106,22 +138,55 @@ def start_plotter():
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
-    
-    # 2) define a cleanup that will kill the plotter if it's still alive
-    def cleanup(signum=None, frame=None):
-        if plotter.poll() is None:
-            plotter.terminate()
-            plotter.wait()
-        # if this was a signal, exit now
-        if signum is not None:
-            sys.exit(0)
+    return plotter
 
+def start_pos_gui():
+    position_path = os.path.join(os.path.dirname(__file__), "position_gui.py")
+    if not os.path.exists(position_path):
+        print(f"Position script not found at {position_path}.")
+        sys.exit(1)
+        
+    position_gui = subprocess.Popen(
+        [sys.executable, position_path],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+    
+    return position_gui
+
+# -----------------------------------------------------------------------------------------------------------
+
+'''
+cleanup: Kills subprocesses if they arte still active and disconnects from PyBullet
+'''
+def cleanup(*processes, signum=None, frame=None):
+    for proc in processes:
+        # only terminate if still running
+        if proc.poll() is None:
+            proc.terminate()
+            proc.wait()
+    
+    try:
+        p.disconnect()
+    except: # already disconnected, ignore
+        pass
+        
+    # if this was a signal, exit now
+    if signum is not None:
+        sys.exit(0)
+
+# -----------------------------------------------------------------------------------------------------------
+
+'''
+register_cleanup: Registers the "cleanup" function for Ctrl-C, Ctrl-Break, and normal program exit
+'''
+def register_cleanup(*processes):
     # 3) register for Ctrl‑C and Ctrl‑Break
-    signal.signal(signal.SIGINT, cleanup)   # Ctrl‑C
-    signal.signal(signal.SIGBREAK, cleanup) # Ctrl‑Break
+    signal.signal(signal.SIGINT, lambda s, f: cleanup(*processes, signum=s, frame=f))   # Ctrl‑C
+    signal.signal(signal.SIGBREAK, lambda s, f: cleanup(*processes, signum=s, frame=f)) # Ctrl‑Break
 
     # 4) register for normal program exit
-    atexit.register(cleanup)
+    atexit.register(cleanup, *processes)
     
 # -----------------------------------------------------------------------------------------------------------
 
@@ -130,32 +195,14 @@ def main():
     ip = InteractPerceive()
     ip.init_sim()
     ip.initialize_plot_file()
-    start_plotter()
+    
+    plotter = start_plotter()
+    position_gui = start_pos_gui()
+    register_cleanup(plotter, position_gui)
 
-    # -----------------------------------------------------------------------------------------------------------
-    # Indices on Franka Panda that we care about
-    # -----------------------------------------------------------------------------------------------------------
-    wrist_joint    = 7     # joint before the gripper
-    finger_joints  = [9, 10]
-    ee_link_index  = 11    # Panda “tool” link for IK
-
-    # fixed “downward” orientation so the gripper faces straight down
-    down_ori = p.getQuaternionFromEuler([math.pi, 0, 0])
-
-    # -----------------------------------------------------------------------------------------------------------
-    # Initial position
-    # -----------------------------------------------------------------------------------------------------------
-    above_pos = [0.5, 0, 0.3]
-    ik_vals = p.calculateInverseKinematics(ip.robot,
-                                           ee_link_index,
-                                           above_pos,
-                                           down_ori,
-                                           maxNumIterations=1000,
-                                           residualThreshold=1e-5)
-    # snap to that pose before we start moving
-    for i in range(7):
-        p.resetJointState(ip.robot, i, ik_vals[i])
-        p.enableJointForceTorqueSensor(ip.robot, i, 1)
+    up_position = [0.5, 0, 0.3]
+    down_orientation = p.getQuaternionFromEuler([math.pi, 0, 0])
+    ip.reset_pose(up_position, down_orientation)
     time.sleep(1)  # let things settle
 
     print("Lowering into the cube…")
@@ -166,9 +213,9 @@ def main():
     for z in [0.15, 0.1, 0.05]:  # descending heights
         target = [0.5, 0, z]
         ik_vals = p.calculateInverseKinematics(ip.robot,
-                                               ee_link_index,
+                                               ip.ee_link_index,
                                                target,
-                                               down_ori)
+                                               down_orientation)
         # command the arm joints
         for i in range(7):
             p.setJointMotorControl2(ip.robot, i,
@@ -176,11 +223,12 @@ def main():
                                     targetPosition=ik_vals[i],
                                     force=200)
         # keep gripper half‑closed
-        for j in finger_joints:
+        for j in ip.finger_joints:
             p.setJointMotorControl2(ip.robot, j,
                                     controlMode=p.POSITION_CONTROL,
                                     targetPosition=0.04,
                                     force=50)
+        ip.write_wf_position_to_file()
         time.sleep(2)  # give time for collision
 
     print("Contact made! Wrist readings follow:")
@@ -190,13 +238,12 @@ def main():
     # -----------------------------------------------------------------------------------------------------------
     try:
         while True:
+            ip.write_wf_position_to_file()
             ft = ip.get_forces()
             ip.write_to_csv(data_dict=ft)
             time.sleep(0.5)
     except KeyboardInterrupt:
         pass
-    finally:
-        p.disconnect()
         
 if __name__ == "__main__":
     main()
