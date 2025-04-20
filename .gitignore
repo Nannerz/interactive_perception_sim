@@ -1,1 +1,4 @@
 *code-workspace
+.venv
+meshes
+ft_data.csv
