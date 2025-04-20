@@ -2,14 +2,25 @@ import json
 import tkinter as tk
 from tkinter import ttk
 import os
+import threading
 
-STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pos.json")
+class Position_GUI_Thread(threading.Thread):
+    def __init__(self, refresh_ms=100, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.daemon = True
+        self.interval = 0.01
+        self.gui = Position_GUI(refresh_ms=refresh_ms)
 
-class EEViewer(tk.Tk):
-    def __init__(self, refresh_ms=100):
-        super().__init__()
-        self.title("End‑Effector State")
+    def run(self):
+        self.gui.mainloop()
+        
+class Position_GUI(tk.Tk):
+    def __init__(self, refresh_ms=100, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.title("End Effector Position")
+        
         self.refresh_ms = refresh_ms
+        self.pos_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pos.json")
 
         # Create labels for each value
         self.vars = {}
@@ -22,22 +33,19 @@ class EEViewer(tk.Tk):
         # Kick off the periodic update
         self.after(self.refresh_ms, self._update)
 
-    def _update(self):
+    def _update(self) -> None:
         try:
-            with open(STATE_FILE, "r") as f:
+            with open(self.pos_file, "r") as f:
                 data = json.load(f)
-            # Update each label if present
+
             for key, var in self.vars.items():
                 if key in data:
                     var.set(f"{data[key]:.3f}")
         except Exception as e:
-            print("DEBUG: got exception: ", e)
-            # If file missing or invalid, just skip this cycle
             pass
-        # schedule next refresh
+
         self.after(self.refresh_ms, self._update)
-
-
+    
 if __name__ == "__main__":
-    app = EEViewer(refresh_ms=100)  # update every 0.1 s
-    app.mainloop()
+    # main()
+    Position_GUI_Thread().run()

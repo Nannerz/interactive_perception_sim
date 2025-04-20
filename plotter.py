@@ -4,58 +4,64 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+import threading
 
-def main():
-    CSV_FILE = "ft_data.csv"
+class Plotter(threading.Thread):
+    def __init__(self, interval=0.01, **kwargs):
+        super().__init__(**kwargs)
+        self.interval = interval
+        self.daemon = True
+        # self._shared_ft = data
+        self.csv_file = "ft_data.csv"
+        self.joint_ids = range(1, 8)
+        self.channels = ["fx", "fy", "fz", "tx", "ty", "tz"]
+        self.lines = {}
+        
+    def run(self) -> None:
+        fig, axes = plt.subplots(len(self.joint_ids), 1, sharex=True, figsize=(8, 12))
+        lines = {}  # will map (joint, channel) -> Line2D object
 
-    # define your joints and channels
-    JOINT_IDS = range(1, 8)
-    CHANNELS = ["fx", "fy", "fz", "tx", "ty", "tz"]
+        # initialize each subplot
+        for ax, j in zip(axes, self.joint_ids):
+            ax.set_title(f"Joint {j}")
+            for ch in self.channels:
+                # empty line for each channel
+                line, = ax.plot([], [], label=ch)
+                lines[(j, ch)] = line
+            ax.legend(loc="upper right")
+            ax.set_ylabel("value")
 
-    # make figure with 6 rows × 1 col
-    fig, axes = plt.subplots(len(JOINT_IDS), 1, sharex=True, figsize=(8, 12))
-    lines = {}  # will map (joint, channel) -> Line2D object
+        axes[-1].set_xlabel("Sample index")
 
-    # initialize each subplot
-    for ax, j in zip(axes, JOINT_IDS):
-        ax.set_title(f"Joint {j}")
-        for ch in CHANNELS:
-            # empty line for each channel
-            line, = ax.plot([], [], label=ch)
-            lines[(j, ch)] = line
-        ax.legend(loc="upper right")
-        ax.set_ylabel("value")
+        def animate(frame):
+            # reload all data
+            df = pd.read_csv(self.csv_file).tail(1000)
+            x = df.index  # use row index as x-axis; switch to a timestamp column if you add one
 
-    axes[-1].set_xlabel("Sample index")
+            # update each joint’s lines
+            for j in self.joint_ids:
+                for ch in self.channels:
+                    key = f"{ch}_{j}"
+                    y = df[key]
+                    line = lines[(j, ch)]
+                    line.set_data(x, y)
 
-    def animate(frame):
-        # reload all data
-        df = pd.read_csv(CSV_FILE).tail(1000)
-        x = df.index  # use row index as x-axis; switch to a timestamp column if you add one
+                ax = axes[j - 1]
+                ax.relim()            # recalc data limits
+                ax.autoscale_view()   # rescale axes
 
-        # update each joint’s lines
-        for j in JOINT_IDS:
-            for ch in CHANNELS:
-                key = f"{ch}_{j}"
-                y = df[key]
-                line = lines[(j, ch)]
-                line.set_data(x, y)
+            return list(lines.values())
 
-            ax = axes[j - 1]
-            ax.relim()            # recalc data limits
-            ax.autoscale_view()   # rescale axes
+        # animate every 500 ms
+        ani = animation.FuncAnimation(
+            fig,
+            animate,
+            interval=500,
+            blit=False
+        )
 
-        return list(lines.values())
+        plt.tight_layout()
+        plt.show()
 
-    # animate every 500 ms
-    ani = animation.FuncAnimation(
-        fig,
-        animate,
-        interval=500,
-        blit=False
-    )
-
-    plt.tight_layout()
-    plt.show()
-    
-main()
+if __name__ == "__main__":
+    Plotter().run()
