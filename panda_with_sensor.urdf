@@ -243,9 +243,9 @@
   
   <!-- 2. Fixed joint from panda_link7 → sensor link -->
   <joint name="wrist_sensor_joint" type="fixed">
-  <parent link="panda_link7"/>
-  <child  link="panda_wrist_sensor_link"/>
-  <origin xyz="0 0 0" rpy="0 0 0"/>
+    <parent link="panda_link8"/>
+    <child  link="panda_wrist_sensor_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
   </joint>
 
   <joint name="panda_hand_joint" type="fixed">

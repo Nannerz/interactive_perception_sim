@@ -4,16 +4,23 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-import threading
+import threading, os
 
 class Plotter(threading.Thread):
-    def __init__(self, interval=0.01, **kwargs):
+    _instance = None
+    
+    def __new__(cls, *args, **kwargs) -> 'Plotter':
+        if cls._instance is None:
+            cls._instance = super(Plotter, cls).__new__(cls)
+        return cls._instance
+    
+    def __init__(self, data_path, interval=0.01, **kwargs):
         super().__init__(**kwargs)
         self.interval = interval
         self.daemon = True
         # self._shared_ft = data
-        self.csv_file = "ft_data.csv"
-        self.joint_ids = range(1, 8)
+        self.csv_file = os.path.join(data_path, "ft_data.csv")
+        self.joint_ids = range(1, 9)
         self.channels = ["fx", "fy", "fz", "tx", "ty", "tz"]
         self.lines = {}
         

@@ -13,6 +13,13 @@ from tkinter import ttk
 #         self.gui.mainloop()
         
 class Position_GUI(tk.Tk):
+    _instance = None
+    
+    def __new__(cls, *args, **kwargs) -> 'Position_GUI':
+        if cls._instance is None:
+            cls._instance = super(Position_GUI, cls).__new__(cls)
+        return cls._instance
+    
     def __init__(self, refresh_ms=100, **kwargs) -> None:
         super().__init__(**kwargs)
         self.title("End Effector Position")
@@ -45,5 +52,4 @@ class Position_GUI(tk.Tk):
         self.after(self.refresh_ms, self._update)
     
 if __name__ == "__main__":
-    Position_GUI(refresh_ms=100).mainloop()
-    # Position_GUI_Thread().run()
+    Position_GUI().mainloop()
