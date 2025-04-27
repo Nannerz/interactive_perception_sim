@@ -6,7 +6,7 @@ import time, math, csv, sys, os, subprocess, threading, signal, atexit, json
 import pandas as pd
 
 # -----------------------------------------------------------------------------------------------------------
-class Simulation(threading.Thread):
+class Simulation():
     _instance = None
     
     def __new__(cls, *args, **kwargs) -> 'Simulation':
@@ -14,16 +14,12 @@ class Simulation(threading.Thread):
             cls._instance = super(Simulation, cls).__new__(cls)
         return cls._instance
 # -----------------------------------------------------------------------------------------------------------
-    def __init__(self, data_path, **kwargs) -> None:
+    def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.daemon = True
-        self.interval = 0.01
         
         self.robot = None
-        self.data_path = data_path
         self.num_joints = 8
         self.sim_lock = threading.Lock()
-        self.init_sim()
 # -----------------------------------------------------------------------------------------------------------
     def init_sim(self) -> None:
         with self.sim_lock:
@@ -37,9 +33,9 @@ class Simulation(threading.Thread):
                                             cameraTargetPosition=[0.5, 0, 0.2])
             p.loadURDF("plane.urdf") # ground plane
 
-            urdf_dir = os.path.join(self.data_path, "panda_with_sensor.urdf")
-            print(f"Loading URDF from: {urdf_dir}")
-            self.robot = p.loadURDF(urdf_dir,
+            # urdf_dir = os.path.join(self.data_path, "panda_with_sensor.urdf")
+            # print(f"Loading URDF from: {urdf_dir}")
+            self.robot = p.loadURDF("franka_panda/panda.urdf",
                                     basePosition=[0, 0, 0],
                                     baseOrientation=p.getQuaternionFromEuler([0, 0, 0]),
                                     useFixedBase=True)

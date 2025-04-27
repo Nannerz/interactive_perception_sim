@@ -2,6 +2,7 @@ import threading, json, os, csv, time, math, sys
 import pybullet as p
 import numpy as np
 from simulation import Simulation
+from fsm import FSM
 # -----------------------------------------------------------------------------------------------------------
 
 class Controller(threading.Thread):
@@ -12,37 +13,57 @@ class Controller(threading.Thread):
             cls._instance = super(Controller, cls).__new__(cls)
         return cls._instance
 # -----------------------------------------------------------------------------------------------------------
-    def __init__(self, sim: Simulation, data_path, **kwargs):
+    def __init__(self, sim: Simulation, data_path, shutdown_event: threading.Event, **kwargs) -> None:
         super().__init__(**kwargs)
         self.daemon = True
-        self.interval = 0.01
+        self.interval = 0.001
         self.sim = sim
         self.robot = sim.robot
         self.sim_lock = sim.sim_lock
+        self.shutdown_event = shutdown_event
+        self.fsm = FSM(controller=self)
         
-        self.wrist_joint = 7 # joint before the gripper
+        # self.wrist_joint = 7 # joint before the gripper
         self.finger_joints = [9, 10]
-        self.ee_link_index = 11 # Panda “tool” link for IK
-        self.num_joints = 8
+
+        self.joint_idx = []
+        self.movable_joint_idx = []
+        with self.sim_lock:
+            for i in range(p.getNumJoints(self.robot)):
+                info = p.getJointInfo(self.robot, i)
+                if info[2] == p.JOINT_REVOLUTE:
+                    self.joint_idx.append(i)
+                if info[2] in [p.JOINT_REVOLUTE, p.JOINT_PRISMATIC]:
+                    self.movable_joint_idx.append(i)
+                if info[1].decode('utf-8') == "panda_grasptarget_hand":
+                    self.ee_link_index = i
+        
+        if not self.ee_link_index:
+            print("Could not find end effector link index, exiting")
+            sys.exit(0)
+
+        self.num_joints = len(self.joint_idx)
+        self.num_movable_joints = len(self.movable_joint_idx)
         
         self.ft_names = ["fx", "fy", "fz", "tx", "ty", "tz"]
         self.ft_types = [f"{name}_{j}" for j in range(1, self.num_joints+1) for name in self.ft_names]
-        # self.maxlen = 1000
+
         self.ft = {
             # f"{name}_{j}": deque(maxlen=self.maxlen)
             f"{name}_{j}": 0
             for j in range(1, self.num_joints+1)
             for name in self.ft_names
         }
-        
+
         self.data_path = data_path
+        
         self.ft_file = os.path.join(self.data_path, "ft_data.csv")
         self.pos_file = os.path.join(self.data_path, "pos.json")
         self.initialize_plot_file()
         
         # State variables
         self.ik_vals = [0] * self.num_joints
-        self.startup_done = False
+        self.go_pos = True
 # -----------------------------------------------------------------------------------------------------------
     # Initialize CSV file with headers, overwrites/deletes existing file with the same name
     def initialize_plot_file(self) -> None:
@@ -63,16 +84,18 @@ class Controller(threading.Thread):
 # -----------------------------------------------------------------------------------------------------------
     # Write joint index & force/torque readings to CSV file
     def write_forces(self, data_dict: dict) -> None:
-        with open(self.ft_file, "a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=self.ft_types)
-            writer.writerow(data_dict)
+        if os.path.isfile(self.ft_file):
+            with open(self.ft_file, "a", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=self.ft_types)
+                writer.writerow(data_dict)
+        else:
+            print(f"Could not find file {self.ft_file}, exiting")
+            sys.exit(0)
 # -----------------------------------------------------------------------------------------------------------
     def get_joint_positions(self) -> list[float]:
         with self.sim_lock:
-            joint_positions = []
-            for joint in range(0, self.num_joints):
-                joint_state = p.getJointState(self.robot, joint)
-                joint_positions.append(joint_state[0])
+            joint_states = p.getJointStates(self.robot, self.joint_idx)
+            joint_positions = [joint_state[0] for joint_state in joint_states]
         return joint_positions
 # -----------------------------------------------------------------------------------------------------------
     def get_ee_position(self) -> list[float]:
@@ -96,8 +119,12 @@ class Controller(threading.Thread):
             "yaw": ee_orientation_wf[2]
         }
         
-        with open(self.pos_file, "w") as f:
-            json.dump(pos, f)
+        try:
+            with open(self.pos_file, "w") as f:
+                json.dump(pos, f)
+        except:
+            print(f"Could not find file {self.pos_file}, exiting")
+            sys.exit(0)     
 # -----------------------------------------------------------------------------------------------------------
     def reset_pose(self, position, orientation) -> None:
         with self.sim_lock:
@@ -108,68 +135,99 @@ class Controller(threading.Thread):
                                                 maxNumIterations=1000,
                                                 residualThreshold=1e-5)
             
-            for i in range(7):
+            for i in self.joint_idx:
                 p.resetJointState(self.robot, i, ik_vals[i])
 # -----------------------------------------------------------------------------------------------------------
     def set_desired_position(self, ik_vals) -> None:
         self.ik_vals = ik_vals
 # -----------------------------------------------------------------------------------------------------------
-    def do_startup(self) -> None:
+    def keep_finger_position(self) -> None:
+        for j in self.finger_joints:
+            p.setJointMotorControl2(self.robot, j,
+                                    controlMode=p.POSITION_CONTROL,
+                                    targetPosition=0.04,
+                                    force=50)
+# -----------------------------------------------------------------------------------------------------------
+    def go_to_desired_position(self, force=100) -> None:
+        with self.sim_lock:
+            for i in range(self.num_joints):
+                p.setJointMotorControl2(self.robot, i,
+                                        controlMode=p.POSITION_CONTROL,
+                                        targetPosition=self.ik_vals[i],
+                                        force=force,
+                                        maxVelocity=0.5)
+# -----------------------------------------------------------------------------------------------------------
+    def compensate_gravity(self) -> None:
+        with self.sim_lock:
+            joint_states = p.getJointStates(self.robot, [i for i in self.movable_joint_idx])
+            current_positions = [joint_state[0] for joint_state in joint_states]
+            current_velocities = [joint_state[1] for joint_state in joint_states]
+
+        with self.sim_lock:
+            # 3) compute gravity‐only torques (zero vel & accel → pure gravity term)
+            tau_full = p.calculateInverseDynamics(self.robot,
+                                                  current_positions,
+                                                  [0.0]*self.num_movable_joints,
+                                                  [0.0]*self.num_movable_joints)
+            tau_g = [tau_full[i] for i in range(self.num_movable_joints)]
+
+            # 4) apply those torques as external torques
+            for idx, j in enumerate(self.movable_joint_idx):
+                axis = p.getJointInfo(self.robot, j)[13]   # joint axis in link frame
+                torque = [axis[0]*tau_g[idx],
+                        axis[1]*tau_g[idx],
+                        axis[2]*tau_g[idx]]
+                p.applyExternalTorque(self.robot,
+                                    j,
+                                    torque,
+                                    flags=p.LINK_FRAME)
+# -----------------------------------------------------------------------------------------------------------
+    def initial_pos(self) -> None:
         initial_x = 0.7
         initial_y = 0
         initial_z = 0.4
         up_position = [initial_x, initial_y, initial_z]
-        down_orientation = p.getQuaternionFromEuler([math.pi, 0, 0])
+        with self.sim_lock:
+            down_orientation = p.getQuaternionFromEuler([math.pi, 0, 0])
         self.reset_pose(up_position, down_orientation)
-        time.sleep(1)  # let things settle
+# -----------------------------------------------------------------------------------------------------------
+    def do_startup(self, next_z) -> None:
+        initial_x = 0.7
+        initial_y = 0
 
+        with self.sim_lock:
+            down_orientation = p.getQuaternionFromEuler([math.pi, 0, 0])
+        
+        # lower to object
         print("Lowering into the cube…")
-
-        # ———————————
-        # 4) LOWER INTO THE CUBE
-        # ———————————
-        for z in np.arange(initial_z, 0.15, -0.05):  # descending heights
-            with self.sim_lock:
-                target = [initial_x, initial_y, z]
-                ik_vals = p.calculateInverseKinematics(self.robot,
+        with self.sim_lock:
+            target = [initial_x, initial_y, next_z]
+            ik_vals = p.calculateInverseKinematics(self.robot,
                                                     self.ee_link_index,
                                                     target,
                                                     down_orientation)
-                # command the arm joints
-                for i in range(7):
-                    p.setJointMotorControl2(self.robot, i,
-                                            controlMode=p.POSITION_CONTROL,
-                                            targetPosition=ik_vals[i],
-                                            force=5)
-                # keep gripper half‑closed
-                for j in self.finger_joints:
-                    p.setJointMotorControl2(self.robot, j,
-                                            controlMode=p.POSITION_CONTROL,
-                                            targetPosition=0.04,
-                                            force=50)
-            print("Position: ", self.get_ee_position())
-            self.write_wf_position()
-            self.write_forces(self.get_forces())
-            time.sleep(2)  # give time for collision
-
-        print("Contact made! Wrist readings follow:")
-        
+        self.set_desired_position(ik_vals)
 # -----------------------------------------------------------------------------------------------------------
     def run(self) -> None:
-        if not self.startup_done:
-            self.do_startup()
-            self.startup_done = True
+        while not self.shutdown_event.is_set():
+            time.sleep(self.interval)
             
-        # -----------------------------------------------------------------------------------------------------------
-        # Stream force readings to csv file for plotting
-        # -----------------------------------------------------------------------------------------------------------
-        try:
+            self.fsm.next_state()
+            
+            if self.go_pos:
+                print("Moving to desired position...")
+                self.keep_finger_position()
+                self.go_to_desired_position()
+            self.compensate_gravity()
+            # print("Position: ", self.get_ee_position())
+            # print("Desired Position: ", self.ik_vals)
+
             self.write_wf_position()
             self.write_forces(self.get_forces())
-        except KeyboardInterrupt:
-            pass
-
-        
+            
+        print("Exiting controller thread...")
+        sys.exit(0)
+            
 if __name__ == "__main__":
     print("This script should not be executed directly, exiting ...")
     sys.exit(0)

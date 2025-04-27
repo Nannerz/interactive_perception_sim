@@ -4,7 +4,8 @@ import pybullet_data
 # 1) connect and load the Panda URDF
 p.connect(p.GUI)
 p.setAdditionalSearchPath(pybullet_data.getDataPath())
-robot_id = p.loadURDF("panda_with_sensor.urdf", useFixedBase=True)
+# robot_id = p.loadURDF("panda_with_sensor.urdf", useFixedBase=True)
+robot_id = p.loadURDF("franka_panda/panda.urdf", useFixedBase=True)
 
 # 2) find out how many joints
 num_joints = p.getNumJoints(robot_id)
@@ -31,3 +32,7 @@ for i in range(num_joints):
     print(f"#{joint_index:2d}: {joint_name:15s} | {joint_type:9s} | "
           f"limits=({lower_limit:.3f}, {upper_limit:.3f}) "
           f"maxForce={max_force:.1f} maxVel={max_vel:.1f}")
+    
+    # dynamic_info = p.getDynamicsInfo(robot_id, i)
+    # print(f"Dynamic info: {dynamic_info}")
+    
