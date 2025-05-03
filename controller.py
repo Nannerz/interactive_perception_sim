@@ -32,6 +32,7 @@ class Controller(threading.Thread):
         self.all_joint_idx = []
         self.ee_link_index = None
         self.sensor_idx = None
+        self.wrist_idx = None
         self.parent_map = defaultdict(list)
         self.get_idxs()
 
@@ -40,8 +41,8 @@ class Controller(threading.Thread):
         
         self.ft_names = ["fx", "fy", "fz", "tx", "ty", "tz"]
         self.ft_types = ["fx_raw", "fy_raw", "fz_raw", "tx_raw", "ty_raw", "tz_raw",
-                         "fx_comp", "fy_comp", "fz_comp", "tx_comp", "ty_comp", "tz_comp",
-                         "fx_wf", "fy_wf", "fz_wf", "tx_wf", "ty_wf", "tz_wf"]
+                         "fx_comp", "fy_comp", "fz_comp", "tx_comp", "ty_comp", "tz_comp"]
+                        #  "fx_wf", "fy_wf", "fz_wf", "tx_wf", "ty_wf", "tz_wf"]
         self.ft = {ft_name: 0 for ft_name in self.ft_types}
 
         self.data_path = data_path
@@ -66,12 +67,14 @@ class Controller(threading.Thread):
                 
                 if info[2] == p.JOINT_REVOLUTE:
                     self.revolute_joint_idx.append(i)
-                if info[2] in [p.JOINT_REVOLUTE, p.JOINT_PRISMATIC]:
+                if info[2] != p.JOINT_FIXED:
                     self.movable_joint_idxs.append(i)
                 if info[1].decode('utf-8') == "panda_grasptarget_hand":
                     self.ee_link_index = i
                 if info[1].decode('utf-8') == "panda_joint8":
                     self.sensor_idx = i
+                if info[1].decode('utf-8') == "panda_joint7":
+                    self.wrist_idx = i
                     
         if not self.ee_link_index:
             print("Could not find end effector link index, setting to last joint index")
@@ -79,15 +82,18 @@ class Controller(threading.Thread):
             
         if not self.sensor_idx:
             print("Could not find sensor joint index, setting to last joint index")
-            self.sensor_idx = self.revolute_joint_idx[-1]     
+            self.sensor_idx = self.revolute_joint_idx[-1]    
+            
+        if not self.wrist_idx:
+            print("Could not find wrist joint index, setting to last joint index")
+            self.wrist_idx = self.revolute_joint_idx[-1] 
 # -----------------------------------------------------------------------------------------------------------
-    def get_descendants(self, link_idx) -> list:
+    def get_downstream(self, link_idx) -> list:
         to_visit = [link_idx]
         descendants = []
         while to_visit:
             link = to_visit.pop()
             descendants.append(link)
-            # add *all* child links (regardless of joint type)
             to_visit.extend(self.parent_map[link])
         return descendants
 # -----------------------------------------------------------------------------------------------------------
@@ -104,17 +110,13 @@ class Controller(threading.Thread):
         for name, val in zip(self.ft_names, raw_ft):
             self.ft[f"{name}_raw"] = val
         
-        # icg_ft = self.get_downstream_icg_ft()
-        # ft_comp = [raw_ft[i] - icg_ft[i] - gripper_mass_ft[i] for i in range(len(raw_ft))]
-        # gripper_mass_ft = self.get_gripper_mass_ft()
-        # ft_comp = [raw_ft[i] - gripper_mass_ft[i] for i in range(len(raw_ft))]
         ft_comp = self.get_ft_minus_mass()
         for name, val in zip(self.ft_names, ft_comp):
             self.ft[f"{name}_comp"] = val
             
-        ft_wf = self.get_sensor_ft_wf()
-        for name, val in zip(self.ft_names, ft_wf):
-            self.ft[f"{name}_wf"] = val
+        # ft_wf = self.get_sensor_ft_wf()
+        # for name, val in zip(self.ft_names, ft_wf):
+        #     self.ft[f"{name}_wf"] = val
         
         return self.ft
 # -----------------------------------------------------------------------------------------------------------
@@ -177,13 +179,6 @@ class Controller(threading.Thread):
     def set_desired_position(self, ik_vals) -> None:
         self.ik_vals = ik_vals
 # -----------------------------------------------------------------------------------------------------------
-    def keep_finger_position(self) -> None:
-        for j in self.finger_joints:
-            p.setJointMotorControl2(self.robot, j,
-                                    controlMode=p.POSITION_CONTROL,
-                                    targetPosition=0.04,
-                                    force=50)
-# -----------------------------------------------------------------------------------------------------------
     def go_to_desired_position(self, force=100) -> None:
         with self.sim_lock:
             for i in range(self.num_revolute_joints):
@@ -192,109 +187,6 @@ class Controller(threading.Thread):
                                         targetPosition=self.ik_vals[i],
                                         force=force,
                                         maxVelocity=0.5)
-# -----------------------------------------------------------------------------------------------------------
-    def maintain_robot_pose(self) -> None:
-        with self.sim_lock:
-            joint_states = p.getJointStates(self.robot, [i for i in self.movable_joint_idxs])
-            current_positions = [joint_state[0] for joint_state in joint_states]
-            current_velocities = [joint_state[1] for joint_state in joint_states]
-
-        with self.sim_lock:
-            # 3) compute gravity‐only torques (zero vel & accel → pure gravity term)
-            tau_full = p.calculateInverseDynamics(self.robot,
-                                                  current_positions,
-                                                  [0.0]*self.num_movable_joints,
-                                                  [0.0]*self.num_movable_joints)
-            tau_g = [tau_full[i] for i in range(self.num_movable_joints)]
-
-            # 4) apply those torques as external torques
-            for idx, j in enumerate(self.movable_joint_idxs):
-                axis = p.getJointInfo(self.robot, j)[13]   # joint axis in link frame
-                torque = [axis[0]*tau_g[idx],
-                        axis[1]*tau_g[idx],
-                        axis[2]*tau_g[idx]]
-                p.applyExternalTorque(self.robot,
-                                    j,
-                                    torque,
-                                    flags=p.LINK_FRAME)
-# -----------------------------------------------------------------------------------------------------------
-    def get_downstream_icg_ft(self) -> list:
-        with self.sim_lock:
-            # Get current positions and velocities of all joints
-            joint_states = p.getJointStates(self.robot, self.movable_joint_idxs)
-            q = [joint_state[0] for joint_state in joint_states]
-            qdot = [joint_state[1] for joint_state in joint_states]
-            
-            sensor_info = p.getJointInfo(self.robot, self.sensor_idx)
-            joint_frame_pos, joint_frame_ori = sensor_info[14], sensor_info[15]
-            
-            # Convert joint frame to world frame
-            raw_ft_joint = p.getJointState(self.robot, self.sensor_idx)[2]
-            raw_f_wf = p.rotateVector(joint_frame_ori, raw_ft_joint[0:3])
-            raw_t_wf = p.rotateVector(joint_frame_ori, raw_ft_joint[3:6])
-            
-            # Convert from world frame to adjusted sensor frame
-            sensor_pos_wf, sensor_ori_wf = p.getLinkState(self.robot, self.sensor_idx)[:2]
-            inv_s = p.invertTransform([0,0,0], sensor_ori_wf)[1]
-            raw_f_s = p.rotateVector(inv_s, raw_f_wf)
-            raw_t_s = p.rotateVector(inv_s, raw_t_wf)
-            
-            downstream_links = self.get_descendants(self.sensor_idx)
-            downstream_actuated = [j for j in self.movable_joint_idxs if j in downstream_links]
-            m = len(downstream_actuated)
-            movable_joint_map = {joint:idx for idx, joint in enumerate(self.movable_joint_idxs)}
-            movable_joint_list = [movable_joint_map[j] for j in downstream_actuated]
-            
-            # Full inverse‐dynamics torques (G + C(q,qdot)⋅qdot; M⋅0 = 0)
-            # G = gravity, C = coriolis/centrifugal, M/i = inertia which we want to be 0
-            tau_icg_all = p.calculateInverseDynamics(self.robot, q, qdot, [0.0]*self.num_movable_joints)
-            tau_icg = [tau_icg_all[movable_joint_map[j]] for j in downstream_actuated]
-            print(f"tau_icg_all: {tau_icg_all}")
-            print(f"tau_icg: {tau_icg}")
-            
-            # Joint damping & Coulomb friction torques
-            tau_df = []
-            for j in downstream_actuated:
-                info = p.getJointInfo(self.robot, j)
-                damping = info[6]
-                friction = info[7]
-                vel = qdot[movable_joint_map[j]]
-                tau_df.append( -damping*vel + ( -friction*math.copysign(1,vel) if abs(vel)>1e-8 else 0.0 ) )
-                print(f"joint {j}, friction: {friction}, vel: {vel}, damping: {damping}")
-                print(f"tau_df: {tau_df}")
-            
-            # Total predicted joint torque
-            tau_total = np.array(tau_icg) + np.array(tau_df)     # shape (m,)
-            
-            Jp_all, Jo_all = p.calculateJacobian(
-                self.robot, 
-                self.sensor_idx,
-                localPosition = joint_frame_pos,
-                objPositions = q,
-                objVelocities = qdot,
-                objAccelerations = [0.0]*self.num_movable_joints
-            )
-            J_full = np.vstack((Jp_all, Jo_all))   # shape (6, m)
-            Jp_all = np.array(Jp_all)
-            Jo_all = np.array(Jo_all)
-            
-            Jp = Jp_all[:, movable_joint_list]
-            Jo = Jo_all[:, movable_joint_list]
-            J = np.vstack((Jp, Jo))   # shape (6, m)
-
-            # Map joint torques to equivalent world‐frame ft f_pred so that J^T f_pred = tau_total
-            # f_pred = inv(J J^T) J * tau_total
-            # JJt = J.dot(J.T)
-            # f_pred_wf = np.linalg.inv(JJt + 1e-3*np.eye(6)).dot(J.dot(tau_total))
-            f_pred_wf = np.linalg.pinv(J.T).dot(tau_total)
-            print(f"f_pred_wf: {f_pred_wf}")
-
-            # Rotate from world frame to sensor frame
-            inv_ori = p.invertTransform([0,0,0], sensor_ori_wf)[1]
-            f_pred_s = p.rotateVector(inv_ori, f_pred_wf[0:3])
-            t_pred_s = p.rotateVector(inv_ori, f_pred_wf[3:6])
-
-        return f_pred_s + t_pred_s
 # -----------------------------------------------------------------------------------------------------------
     def get_sensor_ft_wf(self) -> list:
         with self.sim_lock:
@@ -306,7 +198,8 @@ class Controller(threading.Thread):
             # Convert joint frame to world frame
             raw_f_wf = p.rotateVector(sensor_ori_wf, raw_ft[0:3])
             raw_t_wf = p.rotateVector(sensor_ori_wf, raw_ft[3:6])
-            
+        
+        print(f"f_wf: {raw_f_wf}, t_wf: {raw_t_wf}")
         return raw_f_wf + raw_t_wf
 # -----------------------------------------------------------------------------------------------------------
     def get_ft_minus_mass(self) -> list:
@@ -320,8 +213,8 @@ class Controller(threading.Thread):
             raw_f_wf = p.rotateVector(sensor_ori_wf, raw_ft[0:3])
             raw_t_wf = p.rotateVector(sensor_ori_wf, raw_ft[3:6])
             
-            mass_f_wf = [0.0, 0.0, 9.91]
-            mass_t_wf = [0.0, 0.0, -0.47]
+            mass_f_wf = [-0.0021, -0.0009, 9.9064]
+            mass_t_wf = [0.0002, -0.4716, 0.0000]
             
             comp_f_wf = [raw_f_wf[i] - mass_f_wf[i] for i in range(3)]
             comp_t_wf = [raw_t_wf[i] - mass_t_wf[i] for i in range(3)]
@@ -332,82 +225,51 @@ class Controller(threading.Thread):
             comp_t_s = p.rotateVector(inv_ori_s, comp_t_wf)
             
         return comp_f_s + comp_t_s
-    
-        #     raw_ft_s = p.getJointState(self.robot, self.sensor_idx)[2]
-        #     joint_ori_wf = p.getJointInfo(self.robot, self.sensor_idx)[15] 
-            
-        #     # Convert joint frame to world frame
-        #     raw_f_wf = p.rotateVector(joint_ori_wf, raw_ft_s[0:3])
-        #     raw_t_wf = p.rotateVector(joint_ori_wf, raw_ft_s[3:6])
-            
-        #     mass_f_wf = [0.0, 0.0, 9.91]
-        #     mass_t_wf = [0.0, 0.0, -0.47]
-            
-        #     comp_f_wf = [raw_f_wf[i] - mass_f_wf[i] for i in range(3)]
-        #     comp_t_wf = [raw_t_wf[i] - mass_t_wf[i] for i in range(3)]
-            
-        #     _, inv_ori_s = p.invertTransform([0,0,0], joint_ori_wf)
-            
-        #     comp_f_s = p.rotateVector(inv_ori_s, comp_f_wf)
-        #     comp_t_s = p.rotateVector(inv_ori_s, comp_t_wf)
-            
-        # return comp_f_s + comp_t_s
 # -----------------------------------------------------------------------------------------------------------
-    def get_gripper_mass_ft(self) -> list:
-        robot = self.robot
-        sensor_idx = self.sensor_idx
-        downstream_links = self.get_descendants(sensor_idx)
-        
+    def get_jacobian(self) -> list:
         with self.sim_lock:
-            sensor_state = p.getLinkState(robot, sensor_idx)
-            sensor_pos_wf, sensor_ori_wf = sensor_state[0], sensor_state[1]
+            # Get current positions and velocities of all joints
+            joint_states = p.getJointStates(self.robot, self.movable_joint_idxs)
+            q = [joint_state[0] for joint_state in joint_states]
+            qdot = [joint_state[1] for joint_state in joint_states]
+            n = self.num_movable_joints
             
-            # A -> B transform
-            # invPosB, invOrnB = p.invertTransform(posB_wf, ornB_wf)
-            # posA_inB, ornA_inB = p.multiplyTransforms(
-            #     invPosB, invOrnB,
-            #     posA_wf,  ornA_wf
-            # )
+            ee_pos_wf, ee_ori_wf = p.getLinkState(self.robot, self.ee_link_index)[:2]
+            wrist_pos_local = p.getJointState(self.robot, self.wrist_idx)[0]
             
-            inv_pos_s, inv_ori_s = p.invertTransform(sensor_pos_wf, sensor_ori_wf)
+            # Full inverse‐dynamics torques (G + C(q,qdot)⋅qdot; M⋅0 = 0)
+            # G = gravity, C = coriolis/centrifugal, M/i = inertia which we want to be 0
+            tau_icg = p.calculateInverseDynamics(self.robot, q, qdot, [0.0]*n)
             
-            F_s = [0.0, 0.0, 0.0]
-            T_s = [0.0, 0.0, 0.0]
+            movable_joint_map = {joint:idx for idx, joint in enumerate(self.movable_joint_idxs)}
             
-            for link in downstream_links:
-                # Get mass and center of mass in local frame
-                dyn = p.getDynamicsInfo(robot, link)
-                mass, com_pos_local, com_ori_local = dyn[0], dyn[3], dyn[4]
-                
-                # Get position and orientation of the link in world frame
-                link_state = p.getLinkState(robot, link, computeForwardKinematics=True)
-                link_pos_wf, link_ori_wf = link_state[0], link_state[1]
-                
-                # Center of mass
-                com_pos_wf, com_ori_wf = p.multiplyTransforms(link_pos_wf, link_ori_wf, com_pos_local, [0, 0, 0, 1])
-                com_pos_s, com_ori_s = p.multiplyTransforms(inv_pos_s, inv_ori_s, com_pos_wf, [0, 0, 0, 1])
-                r = com_pos_s
-                
-                # gravity force in world frame
-                # negative because we want to oppose the gravity force
-                F_link_wf = [0.0, 0.0, -mass*self.sim.gravity]
-                F_link_s = p.rotateVector(inv_ori_s, F_link_wf)
-                
-                # torque in sensor frame
-                T_link_s = [
-                    r[1]*F_link_s[2] - r[2]*F_link_s[1],
-                    r[2]*F_link_s[0] - r[0]*F_link_s[2],
-                    r[0]*F_link_s[1] - r[1]*F_link_s[0]
-                ]
-                
-                for i in range(3):
-                    F_s[i] += F_link_s[i]
-                    T_s[i] += T_link_s[i]
-                print(f"link {link}, ft: {list(F_link_s) + T_link_s}")
-                
-            print(f"total mass ft: {F_s + T_s}")
+            # Joint damping & Coulomb friction torques
+            tau_df = []
+            for j in self.movable_joint_idxs:
+                info = p.getJointInfo(self.robot, j)
+                damping = info[6]
+                friction = info[7]
+                vel = qdot[movable_joint_map[j]]
+                tau_df.append( -damping*vel + ( -friction*math.copysign(1,vel) if abs(vel)>1e-8 else 0.0 ) )
+            
+            # Total predicted joint torque
+            tau_total = np.array(tau_icg) + np.array(tau_df) # shape (n,)
+            
+            Jp, Jo = p.calculateJacobian(
+                self.robot, 
+                self.wrist_idx,
+                localPosition = wrist_pos_local,
+                objPositions = q,
+                objVelocities = qdot,
+                objAccelerations = [0.0]*n
+            )
+            J = np.vstack((Jp, Jo))   # shape (6, n)
 
-        return F_s + T_s
+            # Map joint torques to equivalent world‐frame ft f_pred so that J^T f_pred = tau_total
+            # f_pred = inv(J J^T) J * tau_total
+            # JJt = J.dot(J.T)
+            # f_pred_wf = np.linalg.inv(JJt + 1e-3*np.eye(6)).dot(J.dot(tau_total))
+            # f_pred_wf = np.linalg.pinv(J.T).dot(tau_total)
 # -----------------------------------------------------------------------------------------------------------
     def initial_pos(self) -> None:
         initial_x = 0.7
@@ -418,14 +280,61 @@ class Controller(threading.Thread):
             down_orientation = p.getQuaternionFromEuler([0, math.pi/2, 0])
         self.reset_pose(up_position, down_orientation)
 # -----------------------------------------------------------------------------------------------------------
-    def do_wiggle(self) -> None:
-        with self.sim_lock:
-            for i in range(self.num_revolute_joints):
-                p.setJointMotorControl2(self.robot, i,
-                                        controlMode=p.VELOCITY_CONTROL,
-                                        targetPosition=self.ik_vals[i],
-                                        force=100,
-                                        maxVelocity=0.5)
+    def do_wiggle(self,
+                  direction,
+                  body_id = None,
+                  ee_link_idx = None,
+                  wrist_link_idx = None,
+                  max_force=500) -> None:
+        
+        body_id = body_id or self.robot
+        ee_link_idx = ee_link_idx or self.ee_link_index
+        wrist_link_idx = wrist_link_idx or self.wrist_idx
+        
+        w_p, w_o = p.getLinkState(body_id, wrist_link_idx,   computeForwardKinematics=True)[:2]
+        g_p, g_o = p.getLinkState(body_id, ee_link_idx, computeForwardKinematics=True)[:2]
+        
+        inv_p, inv_o = p.invertTransform(g_p, g_o)
+        local_pos, _ = p.multiplyTransforms(inv_p, inv_o, w_p, w_o)
+        
+        omega_local = np.array([2 * direction, 0, 0])
+        
+        # 2) rotate local ω to world frame
+        _, orn = p.getLinkState(body_id, ee_link_idx)[:2]
+        R = np.array(p.getMatrixFromQuaternion(orn)).reshape(3,3)
+        omega_world = R.dot(omega_local)
+        
+        # 3) build full 6-vector twist (v = [0; ω_world])
+        v = np.hstack((np.zeros(3), omega_world))
+        
+        # 4) compute current joint positions & zero velocities/accels
+        q = []
+        for j in self.movable_joint_idxs:
+            q.append(p.getJointState(body_id, j)[0])
+            
+        zero = [0.0]*self.num_movable_joints
+        
+        # 5) get Jacobians (world frame)
+        J_lin, J_ang = p.calculateJacobian(body_id,
+                                        ee_link_idx,
+                                        local_pos,
+                                        q, zero, zero)
+        # stack into 6×n
+        J = np.vstack((np.array(J_lin), np.array(J_ang)))  # shape (6,n)
+        
+        # 6) solve for joint velocities dq = J⁺·v
+        dq = np.linalg.pinv(J).dot(v)  # shape (n,)
+        
+        # 7) send velocity command to each moving joint
+        for idx, joint_idx in enumerate(self.movable_joint_idxs):
+            p.setJointMotorControl2(
+                bodyIndex=body_id,
+                jointIndex=joint_idx,
+                controlMode=p.VELOCITY_CONTROL,
+                targetVelocity=float(dq[idx]),
+                force=max_force
+            )
+        
 # -----------------------------------------------------------------------------------------------------------
     def do_startup(self, next_z) -> None:
         initial_x = 0.7
@@ -450,10 +359,10 @@ class Controller(threading.Thread):
             
             self.fsm.next_state()
             
-            # if self.go_pos:
+            if self.go_pos:
                 # print("Moving to desired position...")
                 # self.keep_finger_position()
-                # self.go_to_desired_position()
+                self.go_to_desired_position()
             # self.maintain_robot_pose()
             # print("Position: ", self.get_ee_position())
             # print("Desired Position: ", self.ik_vals)
