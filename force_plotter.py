@@ -30,20 +30,19 @@ class Plotter(threading.Thread):
         self.joint_ids = self.get_joint_ids()
         self.channels = ["fx", "fy", "fz", "tx", "ty", "tz"]
         self.lines = {}
-        self.max_samples = 5000
+        self.max_samples = 1000
 
     def get_joint_ids(self) -> list:
         # Read only the header row
         with open(self.csv_file, newline='') as f:
             reader = csv.reader(f)
             header = next(reader)
-
-        # Use a set comprehension + regex to grab the number after the last “_”
-        ids = sorted({
-            int(re.search(r'_(\d+)$', col).group(1))
+        
+        ids = {
+            col.split('_', 1)[1]
             for col in header
-            if re.search(r'_(\d+)$', col)
-        })
+            if '_' in col
+        }
         
         return ids
 
@@ -65,23 +64,25 @@ class Plotter(threading.Thread):
 
         def animate(frame):
             if self.shutdown_event.is_set():
-                print("Shutdown event is set, exiting plotter thread.")
-                plt.close(fig)
-                sys.exit(0)
+                try:
+                    print("Shutdown event is set, exiting plotter thread.")
+                    plt.close(fig)
+                finally:
+                    sys.exit(0)
             
             # reload all data
             df = pd.read_csv(self.csv_file).tail(self.max_samples)
             x = df.index  # use row index as x-axis; switch to a timestamp column if you add one
 
             # update each joint’s lines
-            for j in self.joint_ids:
+            for j, id in enumerate(self.joint_ids):
                 for ch in self.channels:
-                    key = f"{ch}_{j}"
+                    key = f"{ch}_{id}"
                     y = df[key]
-                    line = lines[(j, ch)]
+                    line = lines[(id, ch)]
                     line.set_data(x, y)
 
-                ax = axes[j - 1]
+                ax = axes[j]
                 ax.relim()            # recalc data limits
                 ax.autoscale_view()   # rescale axes
 

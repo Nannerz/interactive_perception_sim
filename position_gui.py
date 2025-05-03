@@ -46,9 +46,11 @@ class Position_GUI(tk.Tk):
 
     def _update(self) -> None:
         if self.shutdown_event.is_set():
-            print("Exiting position GUI thread.")
-            self.destroy()
-            sys.exit(0)
+            try:
+                print("Exiting position GUI thread.")
+                self.destroy()
+            finally:
+                sys.exit(0)
         
         try:
             with open(self.pos_file, "r") as f:

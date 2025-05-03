@@ -1,0 +1,14 @@
+Panda has 12 joints (including fixed):
+
+# 0: panda_joint1    | REVOLUTE  | limits=(-2.967, 2.967) maxForce=87.0 maxVel=2.2
+# 1: panda_joint2    | REVOLUTE  | limits=(-1.833, 1.833) maxForce=87.0 maxVel=2.2
+# 2: panda_joint3    | REVOLUTE  | limits=(-2.967, 2.967) maxForce=87.0 maxVel=2.2
+# 3: panda_joint4    | REVOLUTE  | limits=(-3.142, 0.000) maxForce=87.0 maxVel=2.2
+# 4: panda_joint5    | REVOLUTE  | limits=(-2.967, 2.967) maxForce=12.0 maxVel=2.6
+# 5: panda_joint6    | REVOLUTE  | limits=(-0.087, 3.822) maxForce=12.0 maxVel=2.6
+# 6: panda_joint7    | REVOLUTE  | limits=(-2.967, 2.967) maxForce=12.0 maxVel=2.6
+# 7: panda_joint8    | FIXED     | limits=(0.000, -1.000) maxForce=0.0 maxVel=0.0
+# 8: panda_hand_joint | FIXED     | limits=(0.000, -1.000) maxForce=0.0 maxVel=0.0
+# 9: panda_finger_joint1 | PRISMATIC | limits=(0.000, 0.040) maxForce=20.0 maxVel=0.2
+#10: panda_finger_joint2 | PRISMATIC | limits=(0.000, 0.040) maxForce=20.0 maxVel=0.2
+#11: panda_grasptarget_hand | FIXED     | limits=(0.000, -1.000) maxForce=0.0 maxVel=0.0

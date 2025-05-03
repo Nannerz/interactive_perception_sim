@@ -17,7 +17,8 @@ class FSM():
         if self.state == 'start':
             self.controller.go_pos = True
             self.controller.initial_pos()
-            self.state = 'startup'
+            # self.state = 'startup'
+            self.state = 'nothing'
 
         elif self.state == 'startup':
             self.controller.go_pos = True
@@ -28,6 +29,5 @@ class FSM():
                 print("Contact made! Wrist readings follow:")
         else:
             self.controller.go_pos = False
-            pass
 # -----------------------------------------------------------------------------------------------------------
         

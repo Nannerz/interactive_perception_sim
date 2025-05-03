@@ -1,9 +1,6 @@
 import pybullet as p
 import pybullet_data
-import time, math, csv, sys, os, subprocess, threading, signal, atexit, json
-# import numpy as np
-# from collections import deque
-import pandas as pd
+import sys, threading, os
 
 # -----------------------------------------------------------------------------------------------------------
 class Simulation():
@@ -18,14 +15,15 @@ class Simulation():
         super().__init__(**kwargs)
         
         self.robot = None
-        self.num_joints = 8
         self.sim_lock = threading.Lock()
+        self.path = os.path.dirname(os.path.abspath(__file__))
+        self.gravity = -9.81
 # -----------------------------------------------------------------------------------------------------------
     def init_sim(self) -> None:
         with self.sim_lock:
             p.connect(p.GUI)
             p.setAdditionalSearchPath(pybullet_data.getDataPath())
-            p.setGravity(0, 0, -9.81)
+            p.setGravity(0, 0, self.gravity)
             p.setRealTimeSimulation(1)
             p.resetDebugVisualizerCamera(cameraDistance=1.2,
                                             cameraYaw=50,
@@ -33,13 +31,14 @@ class Simulation():
                                             cameraTargetPosition=[0.5, 0, 0.2])
             p.loadURDF("plane.urdf") # ground plane
 
-            # urdf_dir = os.path.join(self.data_path, "panda_with_sensor.urdf")
-            # print(f"Loading URDF from: {urdf_dir}")
+            # urdf_dir = os.path.join(self.path, "panda_no_gripper.urdf")
+            # self.robot = p.loadURDF(urdf_dir,
             self.robot = p.loadURDF("franka_panda/panda.urdf",
                                     basePosition=[0, 0, 0],
                                     baseOrientation=p.getQuaternionFromEuler([0, 0, 0]),
                                     useFixedBase=True)
-            for i in range(0, self.num_joints):
+            num_joints = p.getNumJoints(self.robot)
+            for i in range(0, num_joints):
                 p.enableJointForceTorqueSensor(self.robot, i, 1)
         
         self.create_object()

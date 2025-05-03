@@ -4,7 +4,7 @@ import numpy as np
 # import pandas as pd
 from simulation import Simulation
 from controller import Controller
-from plotter import Plotter
+from force_plotter import Plotter
 
 # -----------------------------------------------------------------------------------------------------------
 
@@ -16,6 +16,7 @@ class App():
         self.therads = []
         self.processes = []
         self.shutdown_event = threading.Event()
+        self.sim_lock = None
 
 # -----------------------------------------------------------------------------------------------------------
 
@@ -55,7 +56,8 @@ class App():
         print("All threads finished.")
         
         try:
-            p.disconnect()
+            with self.sim_lock:
+                p.disconnect()
         except: # already disconnected, ignore
             pass
         
@@ -79,14 +81,10 @@ class App():
             # sim 
             sim = Simulation()
             sim.init_sim()
+            self.sim_lock = sim.sim_lock
             
             # position gui
             self.processes.append(self.start_pos_gui())
-            
-            # matplotlib plotter thread
-            plotter_thread = Plotter(data_path=self.path,
-                                     shutdown_event=self.shutdown_event)
-            plotter_thread.start()
             
             # controller thread
             controller_thread = Controller(sim=sim, 
@@ -94,6 +92,10 @@ class App():
                                         shutdown_event=self.shutdown_event)
             controller_thread.start()
             
+            # matplotlib plotter thread
+            plotter_thread = Plotter(data_path=self.path,
+                                     shutdown_event=self.shutdown_event)
+            plotter_thread.start()
             
             self.threads = [plotter_thread, controller_thread]
             self.register_cleanup(self.processes, self.threads)
