@@ -1,48 +1,34 @@
 import pybullet as p
-import time, os, sys, threading, subprocess, signal, atexit, math
+import time, sys, threading, subprocess, signal, atexit
 import numpy as np
-# import pandas as pd
+from multiprocessing import Process
 from simulation import Simulation
 from controller import Controller
-from force_plotter import Plotter
-
+import force_plotter
+import vel_plotter
+import position_gui
 # -----------------------------------------------------------------------------------------------------------
-
 class App():
     def __init__(self):
         super().__init__()
-        self.path = os.path.dirname(os.path.abspath(__file__))
-        self.initialzied = False
-        self.therads = []
-        self.processes = []
         self.shutdown_event = threading.Event()
         self.sim_lock = None
-
 # -----------------------------------------------------------------------------------------------------------
-
-    ''' start_pos_gui: Starts position gui that shows the current world frame position of the end effector '''
-    def start_pos_gui(self) -> subprocess.Popen:
-        position_path = os.path.join(self.path, "position_gui.py")
-        if not os.path.exists(position_path):
-            print(f"Position script not found at {position_path}.")
-            sys.exit(1)
-            
-        position_gui = subprocess.Popen(
-            [sys.executable, position_path],
-        )
-        
-        return position_gui
-
-# -----------------------------------------------------------------------------------------------------------
-
     ''' cleanup: Kills subprocesses if they arte still active and disconnects from PyBullet '''
     def cleanup(self, processes=None, threads=None, signum=None, frame=None) -> None:
         print("Cleaning up processes")
         for proc in processes:
             # only terminate if still running
-            if proc.poll() is None:
-                proc.terminate()
-                proc.wait()
+            if isinstance(proc, subprocess.Popen):
+                if proc.poll() is None:
+                    proc.terminate()
+                    proc.wait()
+            elif isinstance(proc, Process): # multiprocessing.Process
+                if proc.is_alive():
+                    proc.terminate()
+                    proc.join()
+            else:
+                print(f"Unknown process type: {type(proc)}")
             
         print("Cleaning up threads")
         self.shutdown_event.set()
@@ -63,64 +49,67 @@ class App():
         
         if signum is not None:
             sys.exit(0)
-
 # -----------------------------------------------------------------------------------------------------------
-
     ''' register_cleanup: Registers the "cleanup" function for Ctrl-C, Ctrl-Break, and normal program exit '''
     def register_cleanup(self, processes=None, threads=None) -> None:
-        # 3) register for Ctrl‑C and Ctrl‑Break
-        signal.signal(signal.SIGINT, lambda s, f: self.cleanup(processes, threads, signum=s, frame=f))   # Ctrl‑C
+        # register for Ctrl‑C and Ctrl‑Break
+        signal.signal(signal.SIGINT, lambda s, f: self.cleanup(processes, threads, signum=s, frame=f)) # Ctrl‑C
         signal.signal(signal.SIGBREAK, lambda s, f: self.cleanup(processes, signum=s, frame=f)) # Ctrl‑Break
 
-        # 4) register for normal program exit
+        # register for normal program exit
         atexit.register(self.cleanup, processes, threads)
-        
+# -----------------------------------------------------------------------------------------------------------
+    def check_processes(self, processes) -> bool:
+        for p in processes:
+            if hasattr(p, "poll"): # subprocess.Popen
+                if p.poll() is not None:
+                    return True
+            elif hasattr(p, "exitcode"): # multiprocessing.Process
+                if p.exitcode is not None:
+                    return True
+        return False
 # -----------------------------------------------------------------------------------------------------------
     def run(self) -> None:
-        if not self.initialzied:
-            # sim 
-            sim = Simulation()
-            sim.init_sim()
-            self.sim_lock = sim.sim_lock
-            
-            # position gui
-            self.processes.append(self.start_pos_gui())
-            
-            # controller thread
-            controller_thread = Controller(sim=sim, 
-                                        data_path=self.path,
-                                        shutdown_event=self.shutdown_event)
-            controller_thread.start()
-            
-            # matplotlib plotter thread
-            plotter_thread = Plotter(data_path=self.path,
-                                     shutdown_event=self.shutdown_event)
-            plotter_thread.start()
-            
-            self.threads = [plotter_thread, controller_thread]
-            self.register_cleanup(self.processes, self.threads)
-            
-            self.initialzied = True
-            print("All threads started")
+        threads = []
+        processes = []
+        
+        sim = Simulation()
+        sim.init_sim()
+        self.sim_lock = sim.sim_lock
+        
+        controller_thread = Controller(sim=sim, shutdown_event=self.shutdown_event)
+        controller_thread.start()
+        threads.append(controller_thread)
+        
+        target_processes = [position_gui, force_plotter, vel_plotter]
+        for i, proc in enumerate(target_processes):
+            processes.append(Process(target=proc.main))
+            processes[i].start()
+        
+        self.register_cleanup(processes, threads)
+        
+        print("All threads & processes started")
             
         try:
-            print("Main thread main loop...")
             while not self.shutdown_event.is_set():
                 with sim.sim_lock:
                     if not p.isConnected():
                         print("PyBullet disconnected, exiting...")
                         break
                     
-                dead_threads = [thread for thread in self.threads if not thread.is_alive()]
+                dead_threads = [thread for thread in threads if not thread.is_alive()]
                 if dead_threads:
                     print(f"Threads {dead_threads} have died, exiting...")
                     break
-            
-                time.sleep(0.01)
+                
+                if self.check_processes(processes):
+                    break
+
+                # sleep since main thread only kicks things off and cleans up at the end
+                time.sleep(0.5)
         finally:
             print("Main thread exiting...")
 # -----------------------------------------------------------------------------------------------------------
-        
 if __name__ == "__main__":
     app = App()
     app.run()

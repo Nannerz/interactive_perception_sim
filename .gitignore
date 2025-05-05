@@ -1,6 +1,7 @@
 *code-workspace
 .venv
+*cpython*
 meshes
 ft_data.csv
+vel_data.csv
 pos.json
-*cpython*

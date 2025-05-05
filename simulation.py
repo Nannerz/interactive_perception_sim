@@ -1,19 +1,9 @@
 import pybullet as p
 import pybullet_data
 import sys, threading, os
-
 # -----------------------------------------------------------------------------------------------------------
 class Simulation():
-    _instance = None
-    
-    def __new__(cls, *args, **kwargs) -> 'Simulation':
-        if cls._instance is None:
-            cls._instance = super(Simulation, cls).__new__(cls)
-        return cls._instance
-# -----------------------------------------------------------------------------------------------------------
-    def __init__(self, **kwargs) -> None:
-        super().__init__(**kwargs)
-        
+    def __init__(self) -> None:
         self.robot = None
         self.sim_lock = threading.Lock()
         self.path = os.path.dirname(os.path.abspath(__file__))

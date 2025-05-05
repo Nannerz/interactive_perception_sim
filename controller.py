@@ -5,16 +5,12 @@ import numpy as np
 from simulation import Simulation
 from fsm import FSM
 # -----------------------------------------------------------------------------------------------------------
-
 class Controller(threading.Thread):
-    _instance = None
-# -----------------------------------------------------------------------------------------------------------
-    def __new__(cls, *args, **kwargs) -> 'Controller':
-        if cls._instance is None:
-            cls._instance = super(Controller, cls).__new__(cls)
-        return cls._instance
-# -----------------------------------------------------------------------------------------------------------
-    def __init__(self, sim: Simulation, data_path, shutdown_event: threading.Event, **kwargs) -> None:
+    def __init__(self, 
+                 sim: Simulation, 
+                 shutdown_event: threading.Event, 
+                 **kwargs) -> None:
+        
         super().__init__(**kwargs)
         self.daemon = True
         self.interval = 0.001
@@ -40,16 +36,18 @@ class Controller(threading.Thread):
         self.num_movable_joints = len(self.movable_joint_idxs)
         
         self.ft_names = ["fx", "fy", "fz", "tx", "ty", "tz"]
-        self.ft_types = ["fx_raw", "fy_raw", "fz_raw", "tx_raw", "ty_raw", "tz_raw",
-                         "fx_comp", "fy_comp", "fz_comp", "tx_comp", "ty_comp", "tz_comp"]
-                        #  "fx_wf", "fy_wf", "fz_wf", "tx_wf", "ty_wf", "tz_wf"]
-        self.ft = {ft_name: 0 for ft_name in self.ft_types}
+        self.ft_types = ["raw", "comp"]  # , "wf"]
+        self.ft_keys = [f"{name}_{type}" for name in self.ft_names for type in self.ft_types]
+        self.ft = {ft_name: 0 for ft_name in self.ft_keys}
+        
+        self.joint_vels = {joint: 0 for joint in self.revolute_joint_idx}
 
-        self.data_path = data_path
+        self.data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
         
         self.ft_file = os.path.join(self.data_path, "ft_data.csv")
         self.pos_file = os.path.join(self.data_path, "pos.json")
-        self.initialize_plot_file()
+        self.vel_file = os.path.join(self.data_path, "vel_data.csv")
+        self.initialize_plot_files()
         
         # State variables
         self.ik_vals = [0] * self.num_revolute_joints
@@ -97,10 +95,14 @@ class Controller(threading.Thread):
             to_visit.extend(self.parent_map[link])
         return descendants
 # -----------------------------------------------------------------------------------------------------------
-    # Initialize CSV file with headers, overwrites/deletes existing file with the same name
-    def initialize_plot_file(self) -> None:
+    ''' Initialize CSV file with headers, overwrites/deletes existing file with the same name '''
+    def initialize_plot_files(self) -> None:
         with open(self.ft_file, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=self.ft_types)
+            writer = csv.DictWriter(f, fieldnames=self.ft.keys())
+            writer.writeheader()
+            
+        with open(self.vel_file, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=self.joint_vels.keys())
             writer.writeheader()
 # -----------------------------------------------------------------------------------------------------------
     # Get force/torque readings from each joint
@@ -120,15 +122,36 @@ class Controller(threading.Thread):
         
         return self.ft
 # -----------------------------------------------------------------------------------------------------------
+    def get_joint_velocities(self) -> dict:
+        with self.sim_lock:
+            joint_states = p.getJointStates(self.robot, self.revolute_joint_idx)
+            joint_velocities = [joint_state[1] for joint_state in joint_states]
+        
+        for i, joint in enumerate(self.revolute_joint_idx):
+            self.joint_vels[joint] = joint_velocities[i]
+        
+        return self.joint_vels
+# -----------------------------------------------------------------------------------------------------------
     # Write joint index & force/torque readings to CSV file
-    def write_forces(self, data_dict: dict) -> None:
+    def write_data_files(self) -> None:
+        ft_data = self.get_forces()
         if os.path.isfile(self.ft_file):
             with open(self.ft_file, "a", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=self.ft_types)
-                writer.writerow(data_dict)
+                writer = csv.DictWriter(f, fieldnames=ft_data.keys())
+                writer.writerow(ft_data)
         else:
             print(f"Could not find file {self.ft_file}, exiting")
             sys.exit(0)
+        
+        joint_vels = self.get_joint_velocities()
+        if os.path.isfile(self.vel_file):
+            with open(self.vel_file, "a", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=joint_vels.keys())
+                writer.writerow(joint_vels)
+        else:
+            print(f"Could not find file {self.vel_file}, exiting")
+            sys.exit(0)
+            
 # -----------------------------------------------------------------------------------------------------------
     def get_joint_positions(self) -> list[float]:
         with self.sim_lock:
@@ -291,21 +314,22 @@ class Controller(threading.Thread):
         ee_link_idx = ee_link_idx or self.ee_link_index
         wrist_link_idx = wrist_link_idx or self.wrist_idx
         
-        w_p, w_o = p.getLinkState(body_id, wrist_link_idx,   computeForwardKinematics=True)[:2]
-        g_p, g_o = p.getLinkState(body_id, ee_link_idx, computeForwardKinematics=True)[:2]
+        # wf = world frame
+        wrist_pos_wf, wrist_orn_wf = p.getLinkState(body_id, wrist_link_idx, computeForwardKinematics=True)[:2]
+        ee_pos_wf, ee_orn_wf = p.getLinkState(body_id, ee_link_idx, computeForwardKinematics=True)[:2]
         
-        inv_p, inv_o = p.invertTransform(g_p, g_o)
-        local_pos, _ = p.multiplyTransforms(inv_p, inv_o, w_p, w_o)
+        inv_wrist_pos, inv_wrist_orn = p.invertTransform(wrist_pos_wf, wrist_orn_wf)
+        ee_pos_wrist_frame, _ = p.multiplyTransforms(inv_wrist_pos, inv_wrist_orn, ee_pos_wf, ee_orn_wf)
         
-        omega_local = np.array([2 * direction, 0, 0])
+        omega_wrist_frame = np.array([2 * direction, 0, 0])
         
         # 2) rotate local ω to world frame
         _, orn = p.getLinkState(body_id, ee_link_idx)[:2]
         R = np.array(p.getMatrixFromQuaternion(orn)).reshape(3,3)
-        omega_world = R.dot(omega_local)
+        omega_wf = R.dot(omega_wrist_frame)
         
         # 3) build full 6-vector twist (v = [0; ω_world])
-        v = np.hstack((np.zeros(3), omega_world))
+        v = np.hstack((np.zeros(3), omega_wf))
         
         # 4) compute current joint positions & zero velocities/accels
         q = []
@@ -317,7 +341,7 @@ class Controller(threading.Thread):
         # 5) get Jacobians (world frame)
         J_lin, J_ang = p.calculateJacobian(body_id,
                                         ee_link_idx,
-                                        local_pos,
+                                        ee_pos_wrist_frame,
                                         q, zero, zero)
         # stack into 6×n
         J = np.vstack((np.array(J_lin), np.array(J_ang)))  # shape (6,n)
@@ -368,7 +392,7 @@ class Controller(threading.Thread):
             # print("Desired Position: ", self.ik_vals)
 
             self.write_wf_position()
-            self.write_forces(self.get_forces())
+            self.write_data_files()
             
         print("Exiting controller thread...")
         sys.exit(0)
