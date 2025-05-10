@@ -15,9 +15,6 @@ class VelocityPlotter():
     def run(self) -> None:
         fig, axes = plt.subplots(1, 1, sharex=True, figsize=(4, 4))
         ax = axes[0] if type(axes) is list else axes
-        ax.set_title(f"Joint Velocities")
-        ax.legend(loc="upper right")
-        ax.set_ylabel("value")
         lines = {}
         df = pd.read_csv(self.csv_file)
         
@@ -25,6 +22,10 @@ class VelocityPlotter():
         for key in df.keys():
             line, = ax.plot([], [], label=key)
             lines[key] = line
+            
+        ax.set_title(f"Joint Velocities")
+        ax.legend(loc="upper right")
+        ax.set_ylabel("value")
 
         def animate(frame):
             # load last max_samples data
@@ -47,7 +48,8 @@ class VelocityPlotter():
             fig,
             animate,
             interval=500,
-            blit=True
+            blit=False,
+            cache_frame_data=False
         )
 
         plt.tight_layout()

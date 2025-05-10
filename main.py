@@ -53,6 +53,7 @@ class App():
     ''' register_cleanup: Registers the "cleanup" function for Ctrl-C, Ctrl-Break, and normal program exit '''
     def register_cleanup(self, processes=None, threads=None) -> None:
         # register for Ctrl‑C and Ctrl‑Break
+        # doesnt work on Linux, gotta fix signals
         signal.signal(signal.SIGINT, lambda s, f: self.cleanup(processes, threads, signum=s, frame=f)) # Ctrl‑C
         signal.signal(signal.SIGBREAK, lambda s, f: self.cleanup(processes, signum=s, frame=f)) # Ctrl‑Break
 
@@ -110,6 +111,9 @@ class App():
         finally:
             print("Main thread exiting...")
 # -----------------------------------------------------------------------------------------------------------
-if __name__ == "__main__":
+def main() -> None:
     app = App()
     app.run()
+# -----------------------------------------------------------------------------------------------------------
+if __name__ == "__main__":
+    main()

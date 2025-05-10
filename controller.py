@@ -18,7 +18,13 @@ class Controller(threading.Thread):
         self.robot = sim.robot
         self.sim_lock = sim.sim_lock
         self.shutdown_event = shutdown_event
-        self.fsm = FSM(controller=self)
+        self.initial_x = 0.8
+        self.initial_y = 0
+        self.initial_z = 0.6
+        self.fsm = FSM(controller=self,
+                       initial_x=self.initial_x,
+                       initial_y=self.initial_y,
+                       initial_z=self.initial_z)
         
         # self.wrist_joint = 7 # joint before the gripper
         self.finger_joints = [9, 10]
@@ -37,7 +43,7 @@ class Controller(threading.Thread):
         
         self.ft_names = ["fx", "fy", "fz", "tx", "ty", "tz"]
         self.ft_types = ["raw", "comp"]  # , "wf"]
-        self.ft_keys = [f"{name}_{type}" for name in self.ft_names for type in self.ft_types]
+        self.ft_keys = [f"{name}_{type}" for type in self.ft_types for name in self.ft_names]
         self.ft = {ft_name: 0 for ft_name in self.ft_keys}
         
         self.joint_vels = {joint: 0 for joint in self.revolute_joint_idx}
@@ -50,8 +56,10 @@ class Controller(threading.Thread):
         self.initialize_plot_files()
         
         # State variables
-        self.ik_vals = [0] * self.num_revolute_joints
-        self.go_pos = True
+        self.mode = 'position'
+        self.pause_controls = False
+        self.next_vel = [0.0] * self.num_movable_joints
+        self.next_pos = [0.0] * self.num_movable_joints # ik_values
 # -----------------------------------------------------------------------------------------------------------
     def get_idxs(self) -> None:
         with self.sim_lock:
@@ -105,7 +113,7 @@ class Controller(threading.Thread):
             writer = csv.DictWriter(f, fieldnames=self.joint_vels.keys())
             writer.writeheader()
 # -----------------------------------------------------------------------------------------------------------
-    # Get force/torque readings from each joint
+    ''' Get force/torque readings from each joint '''
     def get_forces(self) -> dict:
         with self.sim_lock:
             raw_ft = p.getJointState(self.robot, self.sensor_idx)[2]
@@ -132,7 +140,7 @@ class Controller(threading.Thread):
         
         return self.joint_vels
 # -----------------------------------------------------------------------------------------------------------
-    # Write joint index & force/torque readings to CSV file
+    ''' Write joint force/torque readings and joint velocities to CSV files '''
     def write_data_files(self) -> None:
         ft_data = self.get_forces()
         if os.path.isfile(self.ft_file):
@@ -150,26 +158,14 @@ class Controller(threading.Thread):
                 writer.writerow(joint_vels)
         else:
             print(f"Could not find file {self.vel_file}, exiting")
-            sys.exit(0)
-            
+            sys.exit(0)      
 # -----------------------------------------------------------------------------------------------------------
-    def get_joint_positions(self) -> list[float]:
-        with self.sim_lock:
-            joint_states = p.getJointStates(self.robot, self.revolute_joint_idx)
-            joint_positions = [joint_state[0] for joint_state in joint_states]
-        return joint_positions
-# -----------------------------------------------------------------------------------------------------------
-    def get_ee_position(self) -> list[float]:
+    ''' Write current world frame positions of end effector to pos_file '''
+    def write_wf_position(self) -> None:        
         with self.sim_lock:
             link_state = p.getLinkState(self.robot, self.ee_link_index)
             ee_position_wf = link_state[4]  # world frame position of the end effector
             ee_orientation_wf = p.getEulerFromQuaternion(link_state[5])  # world frame orientation of the end effector
-        
-        return ee_position_wf, ee_orientation_wf
-# -----------------------------------------------------------------------------------------------------------
-    # Write current world frame positions of end effector to pos_file
-    def write_wf_position(self) -> None:
-        ee_position_wf, ee_orientation_wf = self.get_ee_position()
         
         pos = {
             "x": ee_position_wf[0],
@@ -186,30 +182,6 @@ class Controller(threading.Thread):
         except:
             print(f"Could not find file {self.pos_file}, exiting")
             sys.exit(0)     
-# -----------------------------------------------------------------------------------------------------------
-    def reset_pose(self, position, orientation) -> None:
-        with self.sim_lock:
-            ik_vals = p.calculateInverseKinematics(self.robot,
-                                                self.ee_link_index,
-                                                position,
-                                                orientation,
-                                                maxNumIterations=1000,
-                                                residualThreshold=1e-5)
-            
-            for i in self.revolute_joint_idx:
-                p.resetJointState(self.robot, i, ik_vals[i])
-# -----------------------------------------------------------------------------------------------------------
-    def set_desired_position(self, ik_vals) -> None:
-        self.ik_vals = ik_vals
-# -----------------------------------------------------------------------------------------------------------
-    def go_to_desired_position(self, force=100) -> None:
-        with self.sim_lock:
-            for i in range(self.num_revolute_joints):
-                p.setJointMotorControl2(self.robot, i,
-                                        controlMode=p.POSITION_CONTROL,
-                                        targetPosition=self.ik_vals[i],
-                                        force=force,
-                                        maxVelocity=0.5)
 # -----------------------------------------------------------------------------------------------------------
     def get_sensor_ft_wf(self) -> list:
         with self.sim_lock:
@@ -294,103 +266,148 @@ class Controller(threading.Thread):
             # f_pred_wf = np.linalg.inv(JJt + 1e-3*np.eye(6)).dot(J.dot(tau_total))
             # f_pred_wf = np.linalg.pinv(J.T).dot(tau_total)
 # -----------------------------------------------------------------------------------------------------------
-    def initial_pos(self) -> None:
-        initial_x = 0.7
-        initial_y = 0
-        initial_z = 0.4
-        up_position = [initial_x, initial_y, initial_z]
+    def go_to_desired_position(self, max_speed = 0.4, force=200) -> None:
         with self.sim_lock:
-            down_orientation = p.getQuaternionFromEuler([0, math.pi/2, 0])
-        self.reset_pose(up_position, down_orientation)
+            for idx, joint_idx in enumerate(self.movable_joint_idxs):
+                p.setJointMotorControl2(self.robot, 
+                                        joint_idx,
+                                        controlMode=p.POSITION_CONTROL,
+                                        targetPosition=self.next_pos[idx],
+                                        force=force,
+                                        maxVelocity=max_speed)
+                                        # positionGain=0.2,
+                                        # velocityGain=0.2)
+# -----------------------------------------------------------------------------------------------------------                
+    def get_joint_errors(self) -> list:
+        with self.sim_lock:
+            joint_states = p.getJointStates(self.robot, self.movable_joint_idxs)
+        q = [joint_state[0] for joint_state in joint_states]
+        qd = [joint_state[1] for joint_state in joint_states]
+        
+        print("Desired pos: ", self.next_pos)
+        print("Current pos: ", q)
+        pos_error = [self.next_pos[i] - q[i] for i in range(self.num_movable_joints)]
+        vel_error = [self.next_vel[i] - qd[i] for i in range(self.num_movable_joints)]
+        # print(f"pos_error: {pos_error}")
+        return pos_error, vel_error
 # -----------------------------------------------------------------------------------------------------------
-    def do_wiggle(self,
-                  direction,
-                  body_id = None,
-                  ee_link_idx = None,
-                  wrist_link_idx = None,
-                  max_force=500) -> None:
-        
-        body_id = body_id or self.robot
-        ee_link_idx = ee_link_idx or self.ee_link_index
-        wrist_link_idx = wrist_link_idx or self.wrist_idx
-        
-        # wf = world frame
-        wrist_pos_wf, wrist_orn_wf = p.getLinkState(body_id, wrist_link_idx, computeForwardKinematics=True)[:2]
-        ee_pos_wf, ee_orn_wf = p.getLinkState(body_id, ee_link_idx, computeForwardKinematics=True)[:2]
-        
-        inv_wrist_pos, inv_wrist_orn = p.invertTransform(wrist_pos_wf, wrist_orn_wf)
-        ee_pos_wrist_frame, _ = p.multiplyTransforms(inv_wrist_pos, inv_wrist_orn, ee_pos_wf, ee_orn_wf)
-        
-        omega_wrist_frame = np.array([2 * direction, 0, 0])
-        
-        # 2) rotate local ω to world frame
-        _, orn = p.getLinkState(body_id, ee_link_idx)[:2]
-        R = np.array(p.getMatrixFromQuaternion(orn)).reshape(3,3)
-        omega_wf = R.dot(omega_wrist_frame)
-        
-        # 3) build full 6-vector twist (v = [0; ω_world])
-        v = np.hstack((np.zeros(3), omega_wf))
-        
-        # 4) compute current joint positions & zero velocities/accels
-        q = []
-        for j in self.movable_joint_idxs:
-            q.append(p.getJointState(body_id, j)[0])
+    def stop_movement(self) -> None:
+        with self.sim_lock:
+            for idx, joint_idx in enumerate(self.movable_joint_idxs):
+                p.setJointMotorControl2(
+                    bodyIndex=self.robot,
+                    jointIndex=joint_idx,
+                    controlMode=p.VELOCITY_CONTROL,
+                    targetVelocity=0.0,
+                    force=0
+                )
+# -----------------------------------------------------------------------------------------------------------
+    def apply_speed(self) -> None:
+        with self.sim_lock:
+            for idx, joint_idx in enumerate(self.movable_joint_idxs):
+                p.setJointMotorControl2(
+                    bodyIndex=self.robot,
+                    jointIndex=joint_idx,
+                    controlMode=p.VELOCITY_CONTROL,
+                    targetVelocity=float(self.next_vel[idx]),
+                    force=200
+                )
+
+        print(*(f"J{i}: {vel: 8.5f}," for i, vel in zip(self.movable_joint_idxs, self.next_vel)))
+# -----------------------------------------------------------------------------------------------------------
+    def initial_reset(self) -> None:
+        pos = [self.initial_x, self.initial_y, self.initial_z]
+        with self.sim_lock:
+            orn = p.getQuaternionFromEuler([0, math.pi/2, 0])
+            ik_vals = p.calculateInverseKinematics(self.robot,
+                                                   self.ee_link_index,
+                                                   pos,
+                                                   orn,
+                                                   maxNumIterations=1000,
+                                                   residualThreshold=1e-5)
             
-        zero = [0.0]*self.num_movable_joints
-        
-        # 5) get Jacobians (world frame)
-        J_lin, J_ang = p.calculateJacobian(body_id,
-                                        ee_link_idx,
-                                        ee_pos_wrist_frame,
-                                        q, zero, zero)
-        # stack into 6×n
-        J = np.vstack((np.array(J_lin), np.array(J_ang)))  # shape (6,n)
-        
-        # 6) solve for joint velocities dq = J⁺·v
-        dq = np.linalg.pinv(J).dot(v)  # shape (n,)
-        
-        # 7) send velocity command to each moving joint
-        for idx, joint_idx in enumerate(self.movable_joint_idxs):
-            p.setJointMotorControl2(
-                bodyIndex=body_id,
-                jointIndex=joint_idx,
-                controlMode=p.VELOCITY_CONTROL,
-                targetVelocity=float(dq[idx]),
-                force=max_force
-            )
-        
+            for idx, joint_idx in enumerate(self.movable_joint_idxs):
+                p.resetJointState(self.robot, joint_idx, ik_vals[idx])
 # -----------------------------------------------------------------------------------------------------------
     def do_startup(self, next_z) -> None:
-        initial_x = 0.7
-        initial_y = 0
-
         with self.sim_lock:
-            down_orientation = p.getQuaternionFromEuler([math.pi, 0, 0])
-        
-        # lower to object
-        print("Lowering into the cube…")
-        with self.sim_lock:
-            target = [initial_x, initial_y, next_z]
+            orn = p.getQuaternionFromEuler([0, math.pi/2, 0])
+            target = [self.initial_x, self.initial_y, next_z]
             ik_vals = p.calculateInverseKinematics(self.robot,
-                                                    self.ee_link_index,
-                                                    target,
-                                                    down_orientation)
-        self.set_desired_position(ik_vals)
+                                                   self.ee_link_index,
+                                                   target,
+                                                   orn)
+        self.next_pos = ik_vals
+# -----------------------------------------------------------------------------------------------------------
+    def do_wiggle(self, direction) -> None:
+        with self.sim_lock:
+            # wf = world frame
+            wrist_pos_wf, wrist_orn_wf = p.getLinkState(self.robot, 
+                                                        self.wrist_idx, 
+                                                        computeForwardKinematics=True)[:2]
+            ee_pos_wf, ee_orn_wf = p.getLinkState(self.robot, 
+                                                  self.ee_link_index, 
+                                                  computeForwardKinematics=True)[:2]
+            
+            inv_wrist_pos, inv_wrist_orn = p.invertTransform(wrist_pos_wf, wrist_orn_wf)
+            ee_pos_wrist_frame, _ = p.multiplyTransforms(inv_wrist_pos, inv_wrist_orn, ee_pos_wf, ee_orn_wf)
+            
+            omega_wrist_frame = np.array([0.2 * direction, 0, 0])
+            
+            # rotate local w to world frame
+            _, orn = p.getLinkState(self.robot, self.ee_link_index)[:2]
+            R = np.array(p.getMatrixFromQuaternion(orn)).reshape(3,3)
+            omega_wf = R.dot(omega_wrist_frame)
+            
+            # build full 6-vector twist (v = [0; w_world])
+            v = np.hstack((np.zeros(3), omega_wf))
+            
+            # Get current joint states & velocities
+            joint_states = p.getJointStates(self.robot, self.movable_joint_idxs)
+            q = [joint_state[0] for joint_state in joint_states]
+            qd = [joint_state[1] for joint_state in joint_states] 
+            qdd = [0.0]*self.num_movable_joints # acceleration is zero
+            
+            # Jacobian, world frame
+            J_lin, J_ang = p.calculateJacobian(self.robot,
+                                            self.wrist_idx,
+                                            ee_pos_wrist_frame,
+                                            q, 
+                                            qd, 
+                                            qdd)
+            # stack into shape (6,n)
+            J = np.vstack((np.array(J_lin), np.array(J_ang)))
+            
+            # solve for joint velocities dq = J+ . v
+            dq = np.linalg.pinv(J).dot(v)  # shape (n,)
+            
+            self.next_vel = [dq[i] for i in range(self.num_movable_joints)]
 # -----------------------------------------------------------------------------------------------------------
     def run(self) -> None:
         while not self.shutdown_event.is_set():
             time.sleep(self.interval)
+            # self.next_vel = [0.0] * self.num_movable_joints
+            # self.next_pos = [0.0] * self.num_movable_joints
             
-            self.fsm.next_state()
+            with self.sim_lock:
+                keys = p.getKeyboardEvents()
+            if ord('q') in keys:
+                self.pause_controls = True
+                self.stop_movement()
+            if ord('e') in keys:
+                self.pause_controls = False
+                
+            if self.pause_controls == False:
+                self.fsm.next_state()
+                
+                match self.mode:
+                    case 'position':
+                        self.go_to_desired_position()
+                    case 'velocity':
+                        self.apply_speed()
+            # else:
+            #     self.stop_movement()
             
-            if self.go_pos:
-                # print("Moving to desired position...")
-                # self.keep_finger_position()
-                self.go_to_desired_position()
-            # self.maintain_robot_pose()
-            # print("Position: ", self.get_ee_position())
-            # print("Desired Position: ", self.ik_vals)
-
             self.write_wf_position()
             self.write_data_files()
             
