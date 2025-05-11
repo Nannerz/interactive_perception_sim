@@ -8,13 +8,14 @@ class Simulation():
         self.sim_lock = threading.Lock()
         self.path = os.path.dirname(os.path.abspath(__file__))
         self.gravity = -9.81
+        self.obj = None
 # -----------------------------------------------------------------------------------------------------------
     def init_sim(self) -> None:
         with self.sim_lock:
             p.connect(p.GUI)
             p.setAdditionalSearchPath(pybullet_data.getDataPath())
             p.setGravity(0, 0, self.gravity)
-            p.setRealTimeSimulation(1)
+            p.setRealTimeSimulation(0)
             p.resetDebugVisualizerCamera(cameraDistance=1.2,
                                             cameraYaw=50,
                                             cameraPitch=-30,
@@ -36,14 +37,15 @@ class Simulation():
     def create_object(self) -> None:
         with self.sim_lock:
             # create a red box at (0.5, 0, 0.05)
-            box_half_extents = [0.05]*3
+            # box_half_extents = [0.05]*3 # cube
+            box_half_extents = [0.02, 0.02, 0.15] # rectangle
             box_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=box_half_extents)
             box_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=box_half_extents,
                                                 rgbaColor=[1, 0, 0, 1])
-            p.createMultiBody(baseMass=1,
-                                    baseCollisionShapeIndex=box_col,
-                                    baseVisualShapeIndex=box_vis,
-                                    basePosition=[0.75, 0, 0.1])
+            self.obj = p.createMultiBody(baseMass=10,
+                                         baseCollisionShapeIndex=box_col,
+                                         baseVisualShapeIndex=box_vis,
+                                         basePosition=[0.95, 0.0, 0.05])
 # -----------------------------------------------------------------------------------------------------------
 if __name__ == "__main__":
     print("This script should not be executed directly, exiting ...")

@@ -1,5 +1,5 @@
 import pybullet as p
-import time, sys, threading, subprocess, signal, atexit
+import time, sys, threading, subprocess, signal, atexit, traceback
 import numpy as np
 from multiprocessing import Process
 from simulation import Simulation
@@ -82,7 +82,8 @@ class App():
         controller_thread.start()
         threads.append(controller_thread)
         
-        target_processes = [position_gui, force_plotter, vel_plotter]
+        # target_processes = [position_gui, force_plotter, vel_plotter]
+        target_processes = [position_gui, force_plotter]
         for i, proc in enumerate(target_processes):
             processes.append(Process(target=proc.main))
             processes[i].start()

@@ -1,7 +1,9 @@
 *code-workspace
+.vscode
 .venv
 *cpython*
 meshes
 ft_data.csv
 vel_data.csv
 pos.json
+test.py

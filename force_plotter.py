@@ -1,6 +1,7 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+import numpy as np
 import os, csv
 # -----------------------------------------------------------------------------------------------------------
 class FTPlotter():
@@ -9,32 +10,37 @@ class FTPlotter():
         self.csv_file = os.path.join(self.data_path, "ft_data.csv")
         if not os.path.exists(self.csv_file):
             raise FileNotFoundError(f"CSV file not found: {self.csv_file}")
-        
-        self.joint_ids = self.get_joint_ids()
-        self.ft_types = ["fx", "fy", "fz", "tx", "ty", "tz"]
+
+        self.data_map = self.get_data_map()
         self.max_samples = 2000
 # -----------------------------------------------------------------------------------------------------------
-    def get_joint_ids(self) -> list:
-        # Read only the header row
+    def get_data_map(self) -> list:
         with open(self.csv_file, newline='') as f:
             reader = csv.reader(f)
             header = next(reader)
-        
-        ids = sorted({col.split('_', 1)[1] for col in header if '_' in col})
-        
-        return ids
+
+        data_map = {}
+        for col in header:
+            if '_' in col:
+                data_type, name = col.split('_', 1)
+                if name not in data_map:
+                    data_map[name] = {}
+                data_map[name][data_type] = 0
+
+        return data_map
 # -----------------------------------------------------------------------------------------------------------
     def run(self) -> None:
-        fig, axes = plt.subplots(len(self.joint_ids), 1, sharex=True, figsize=(8, 12))
+        fig, axes = plt.subplots(len(self.data_map), 1, sharex=True, figsize=(8, 12))
         lines = {}  # (id, type) -> Line2D object
+        if len(self.data_map) == 1:
+            axes = [axes]
         
-        # initialize each subplot
-        for ax, id in zip(axes, self.joint_ids):
-            ax.set_title(f"Joint FT {id}")
-            for type in self.ft_types:
+        for ax, name in zip(axes, self.data_map):
+            ax.set_title(f"{name}")
+            for val in self.data_map[name]:
                 # start with an empty line for each type
-                line, = ax.plot([], [], label=type)
-                lines[(id, type)] = line
+                line, = ax.plot([], [], label=f"{val}_{name}")
+                lines[(name, val)] = line
             ax.legend(loc="upper right")
             ax.set_ylabel("Force/Torque")
 
@@ -43,10 +49,13 @@ class FTPlotter():
         def animate(frame):
             # read previous max_samples data & update plots
             df = pd.read_csv(self.csv_file).tail(self.max_samples)
-            for i, id in enumerate(self.joint_ids):
-                for type in self.ft_types:
-                    line = lines[(id, type)]
-                    line.set_data(df.index, df[f"{type}_{id}"])
+            x = np.arange(len(df), dtype=float)
+                    
+            for i, name in enumerate(self.data_map):
+                for val in self.data_map[name]:
+                    line = lines[(name, val)]
+                    y = df[f"{val}_{name}"].to_numpy(dtype=float)
+                    line.set_data(x, y)
 
                 ax = axes[i]
                 ax.relim()
