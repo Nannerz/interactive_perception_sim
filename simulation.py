@@ -42,10 +42,10 @@ class Simulation():
             box_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=box_half_extents)
             box_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=box_half_extents,
                                                 rgbaColor=[1, 0, 0, 1])
-            self.obj = p.createMultiBody(baseMass=10,
+            self.obj = p.createMultiBody(baseMass=1,
                                          baseCollisionShapeIndex=box_col,
                                          baseVisualShapeIndex=box_vis,
-                                         basePosition=[0.95, 0.0, 0.05])
+                                         basePosition=[0.8, 0.0, 0.05])
 # -----------------------------------------------------------------------------------------------------------
 if __name__ == "__main__":
     print("This script should not be executed directly, exiting ...")

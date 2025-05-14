@@ -4,6 +4,7 @@ import pybullet as p
 import numpy as np
 from simulation import Simulation
 from fsm import FSM
+from cvxopt import matrix, solvers
 # -----------------------------------------------------------------------------------------------------------
 class Controller(threading.Thread):
     def __init__(self, 
@@ -18,7 +19,7 @@ class Controller(threading.Thread):
         self.robot = sim.robot
         self.sim_lock = sim.sim_lock
         self.shutdown_event = shutdown_event
-        self.initial_x = 0.85
+        self.initial_x = 0.7
         self.initial_y = 0.0
         self.initial_z = 0.15
         self.fsm = FSM(controller=self,
@@ -113,7 +114,8 @@ class Controller(threading.Thread):
 # -----------------------------------------------------------------------------------------------------------
     ''' Initialize CSV file with headers, overwrites/deletes existing file with the same name '''
     def initialize_plot_files(self) -> None:
-        keys = self.ft_keys + self.speed_keys + self.joint_keys
+        # keys = self.ft_keys + self.speed_keys + self.joint_keys
+        keys = self.ft_keys + self.speed_keys
         with open(self.ft_file, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=keys)
             writer.writeheader()
@@ -122,23 +124,18 @@ class Controller(threading.Thread):
             writer = csv.DictWriter(f, fieldnames=self.joint_vels.keys())
             writer.writeheader()
 # -----------------------------------------------------------------------------------------------------------
-    ''' Get force/torque readings from each joint '''
-    def get_forces(self) -> dict:
-        for name, val in zip(self.ft_names, self.ft_contact):
-            self.ft[f"{name}_contact"] = val
-        
-        return self.ft
-# -----------------------------------------------------------------------------------------------------------
     ''' Write joint force/torque readings and joint velocities to CSV files '''
     def write_data_files(self) -> None:
         for i, name in enumerate(self.speed_names):
-            self.speed[f"{name}_ee"] = self.speed_wf[i]
+            self.speed[f"{name}_v_wf"] = self.speed_wf[i]
             
-        for i, name in enumerate(self.movable_joint_idxs):
-            self.joint_speed[f"{name}_jointspeed"] = self.next_vel[i]
+        # for i, name in enumerate(self.movable_joint_idxs):
+        #     self.joint_speed[f"{name}_jointspeed"] = self.next_vel[i]
             
-        ft_data = self.get_forces()
-        combined = ft_data | self.speed | self.joint_speed
+        for i, name in enumerate(self.ft_names):
+            self.ft[f"{name}_contact_ft"] = self.ft_contact[i]
+            
+        combined = self.ft | self.speed | self.joint_speed
         
         if os.path.isfile(self.ft_file):
             with open(self.ft_file, "a", newline="") as f:
@@ -173,7 +170,7 @@ class Controller(threading.Thread):
             print(f"Could not find file {self.pos_file}, exiting")
             sys.exit(0)     
 # -----------------------------------------------------------------------------------------------------------
-    def get_contact_ft(self):
+    def get_contact_ft(self) -> None:
         with self.sim_lock:
             wrist_pos, wrist_ori = p.getLinkState(self.robot, self.wrist_idx)[:2]
             wrist_pos = np.array(wrist_pos)
@@ -185,33 +182,33 @@ class Controller(threading.Thread):
             total_torque_world = np.zeros(3)
             
             contact_pts = p.getContactPoints(self.robot, self.sim.obj)
-            for pt in contact_pts:
-                link = pt[3]
-                if link <= self.wrist_idx:
-                    continue
+        for pt in contact_pts:
+            link = pt[3]
+            if link <= self.wrist_idx:
+                print(f"Skipping contact point {link} < wrist_idx {self.wrist_idx}")
+                continue
 
-                contact_pos = np.array(pt[5])
-                normal = np.array(pt[7])
-                fn = pt[9]
+            contact_pos = np.array(pt[5])
+            normal = np.array(pt[7])
+            fn = pt[9]
 
-                lateral_dir1 = np.array(pt[11])
-                f_lat1 = pt[10]
-                lateral_dir2 = np.array(pt[13])
-                f_lat2 = pt[12]
+            lateral_dir1 = np.array(pt[11])
+            f_lat1 = pt[10]
+            lateral_dir2 = np.array(pt[13])
+            f_lat2 = pt[12]
+            
+            contact_force = fn * normal + f_lat1 * lateral_dir1 + f_lat2 * lateral_dir2
+            
+            r = contact_pos - wrist_pos
+            torque = np.cross(r, contact_force)
+            
+            total_force_world += contact_force
+            total_torque_world += torque
                 
-                contact_force = fn * normal + f_lat1 * lateral_dir1 + f_lat2 * lateral_dir2
-                
-                r = contact_pos - wrist_pos
-                torque = np.cross(r, contact_force)
-                
-                total_force_world += contact_force
-                total_torque_world += torque
-                
-            total_force_local = rot_world_to_wrist @ total_force_world
-            total_torque_local = rot_world_to_wrist @ total_torque_world
+        total_force_local = rot_world_to_wrist @ total_force_world
+        total_torque_local = rot_world_to_wrist @ total_torque_world
 
-            self.ft_contact = list(total_force_local) + list(total_torque_local)
-            # return list(total_force_local) + list(total_torque_local)
+        self.ft_contact = list(total_force_local) + list(total_torque_local)
 # -----------------------------------------------------------------------------------------------------------
     def stop_movement(self) -> None:
         with self.sim_lock:
@@ -232,11 +229,11 @@ class Controller(threading.Thread):
                 
             #     if pos < self.joint_lower_limits[i] + margin and self.next_vel[i] < 0:
             #         limit_hit = True
-            #         self.next_vel[i] = 0.1
+            #         self.next_vel[i] = 0.0
             #         print(f"Joint {joint_idx} {self.joint_names[joint_idx]} limit {self.joint_lower_limits[i]} hit at {pos}")
             #     elif pos > self.joint_upper_limits[i] - margin and self.next_vel[i] > 0:
             #         limit_hit = True
-            #         self.next_vel[i] = -0.1
+            #         self.next_vel[i] = 0.0
             #         print(f"Joint {joint_idx} {self.joint_names[joint_idx]} limit {self.joint_upper_limits[i]} hit at {pos}")
                 
             #     if limit_hit:
@@ -369,39 +366,77 @@ class Controller(threading.Thread):
             J = np.vstack((np.array(J_lin), np.array(J_ang)))
             n = J.shape[1]
             
-            limits = np.array(self.max_joint_velocities)
-            # Weighted pseudoinverse, bias movement towards joints with more freedom
-            W_inv = np.diag(1.0/limits**2)
-
-            # Damped pseudo inverse, avoid singularities
+            alpha = 1e-2
+            dt = 1.0 / 240.0
             y = 1e-2
-            JWJt = J.dot(W_inv).dot(J.T) + y * np.eye(6)
-            J_wpinv = W_inv.dot(J.T).dot(np.linalg.inv(JWJt))
-            dq_primary = J_wpinv.dot(speed_wf)
             q = np.array(q)
             q_min = np.array(self.joint_lower_limits)
             q_max = np.array(self.joint_upper_limits)
+            limits = np.array(self.max_joint_velocities)
+            W = np.diag((1.0/limits)**2)
             
-            # Compute gradient to avoid joint limits
-            # qc   = (q_min + q_max)/2
-            # grad = (q - qc) / (q_max - q_min)**2
-            epsilon = 1e-3
-            d_high = np.maximum(q - q_max, epsilon)
-            d_low  = np.maximum(q_min - q, epsilon)
-            grad = -2.0/d_low**3 + 2.0/d_high**3
-            k = 0.4
-            dq_null = -k * grad
+            # Quadratic cost: ½ dqᵀ H dq + gᵀ dq
+            # H = J.T.dot(J) + alpha * np.eye(n)
+            H = J.T.dot(J) + y * W 
+            g = -J.T.dot(speed_wf)
             
-            # Project in null space
-            P = np.eye(n) - J_wpinv.dot(J) 
+            # Joint velocity bounds from position limits:
+            #  q + dq·dt ≥ q_min  ⇒ dq ≥ (q_min - q)/dt
+            #  q + dq·dt ≤ q_max  ⇒ dq ≤ (q_max - q)/dt
+            lb = (q_min - q) / dt
+            ub = (q_max - q) / dt
             
-            dq = dq_primary + P.dot(dq_null)
-            over = np.abs(dq) > limits
-            if np.any(over):
-                s = np.min(limits[over] / np.abs(dq[over]))
-                dq *= s
-                
+            # Inequality G dq ≤ h encapsulating both bounds:
+            #  dq ≤ ub   →  I dq ≤ ub
+            #  -dq ≤ -lb → -I dq ≤ -lb
+            G = np.vstack(( np.eye(n), -np.eye(n) ))
+            h = np.hstack(( ub, -lb ))
+            
+            # Convert to cvxopt matrices
+            P = matrix(H)
+            q_cvx = matrix(g)
+            G_cvx = matrix(G)
+            h_cvx = matrix(h)
+            
+            # Solve QP
+            sol = solvers.qp(P, q_cvx, G_cvx, h_cvx, options={'show_progress': False})
+            dq = np.array(sol['x']).flatten()
+            
             self.next_vel = dq
+            
+            # limits = np.array(self.max_joint_velocities)
+            # # Weighted pseudoinverse, bias movement towards joints with more freedom
+            # W_inv = np.diag(1.0/limits**2)
+
+            # # Damped pseudo inverse, avoid singularities
+            # y = 1e-2
+            # JWJt = J.dot(W_inv).dot(J.T) + y * np.eye(6)
+            # J_wpinv = W_inv.dot(J.T).dot(np.linalg.inv(JWJt))
+            # dq_primary = J_wpinv.dot(speed_wf)
+            # q = np.array(q)
+            # q_min = np.array(self.joint_lower_limits)
+            # q_max = np.array(self.joint_upper_limits)
+            
+            # # Compute gradient to avoid joint limits
+            # # qc   = (q_min + q_max)/2
+            # # grad = (q - qc) / (q_max - q_min)**2
+            # epsilon = 1e-3
+            # d_high = np.maximum(q - q_max, epsilon)
+            # d_low  = np.maximum(q_min - q, epsilon)
+            # grad = -2.0/d_low**3 + 2.0/d_high**3
+            # k = 0.4
+            # dq_null = -k * grad
+            
+            # # Project in null space
+            # P = np.eye(n) - J_wpinv.dot(J) 
+            
+            # dq = dq_primary + P.dot(dq_null)
+            # over = np.abs(dq) > limits
+            # if np.any(over):
+            #     s = np.min(limits[over] / np.abs(dq[over]))
+            #     dq *= s
+                
+            # self.next_vel = dq
 # -----------------------------------------------------------------------------------------------------------
     def run(self) -> None:
         while not self.shutdown_event.is_set():
