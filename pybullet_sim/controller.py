@@ -47,12 +47,13 @@ class Controller(threading.Thread):
         
         self.ft_names = ["fx", "fy", "fz", "tx", "ty", "tz"]
         # self.ft_types = ["raw", "comp", "contact"]
-        self.ft_types = ["contact_ft"]
+        self.ft_types = ["contact_ft", "ema_ft"]
         self.ft_keys = [f"{name}_{type}" for type in self.ft_types for name in self.ft_names]
         self.ft = {ft_name: 0 for ft_name in self.ft_keys}
         self.ft_contact = [0.0] * 6
+        self.ft_ema = [0.0] * 6
         
-        self.joint_vels = {joint: 0 for joint in self.revolute_joint_idx}
+        # self.joint_vels = {joint: 0 for joint in self.revolute_joint_idx}
 
         self.data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
         
@@ -120,9 +121,9 @@ class Controller(threading.Thread):
             writer = csv.DictWriter(f, fieldnames=keys)
             writer.writeheader()
             
-        with open(self.vel_file, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=self.joint_vels.keys())
-            writer.writeheader()
+        # with open(self.vel_file, "w", newline="") as f:
+        #     writer = csv.DictWriter(f, fieldnames=self.joint_vels.keys())
+        #     writer.writeheader()
 # -----------------------------------------------------------------------------------------------------------
     ''' Write joint force/torque readings and joint velocities to CSV files '''
     def write_data_files(self) -> None:
@@ -135,7 +136,11 @@ class Controller(threading.Thread):
         for i, name in enumerate(self.ft_names):
             self.ft[f"{name}_contact_ft"] = self.ft_contact[i]
             
-        combined = self.ft | self.speed | self.joint_speed
+        for i, name in enumerate(self.ft_names):
+            self.ft[f"{name}_ema_ft"] = self.ft_ema[i]
+            
+        # combined = self.ft | self.speed | self.joint_speed
+        combined = self.ft | self.speed
         
         if os.path.isfile(self.ft_file):
             with open(self.ft_file, "a", newline="") as f:
@@ -182,6 +187,7 @@ class Controller(threading.Thread):
             total_torque_world = np.zeros(3)
             
             contact_pts = p.getContactPoints(self.robot, self.sim.obj)
+            
         for pt in contact_pts:
             link = pt[3]
             if link <= self.wrist_idx:
