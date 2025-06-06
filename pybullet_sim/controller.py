@@ -21,7 +21,7 @@ class Controller(threading.Thread):
         self.shutdown_event = shutdown_event
         self.initial_x = 0.7
         self.initial_y = 0.0
-        self.initial_z = 0.15
+        self.initial_z = 0.12
         self.fsm = FSM(controller=self,
                        initial_x=self.initial_x,
                        initial_y=self.initial_y,
@@ -101,7 +101,6 @@ class Controller(threading.Thread):
                     self.max_joint_velocities.append(info[11])
                 if info[1].decode('utf-8') == "panda_grasptarget_hand":
                     self.ee_link_index = i
-                # if info[1].decode('utf-8') == "panda_joint7":
                 if info[1].decode('utf-8') == "panda_hand_joint":
                     self.wrist_idx = i
         
@@ -115,23 +114,15 @@ class Controller(threading.Thread):
 # -----------------------------------------------------------------------------------------------------------
     ''' Initialize CSV file with headers, overwrites/deletes existing file with the same name '''
     def initialize_plot_files(self) -> None:
-        # keys = self.ft_keys + self.speed_keys + self.joint_keys
         keys = self.ft_keys + self.speed_keys
         with open(self.ft_file, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=keys)
             writer.writeheader()
-            
-        # with open(self.vel_file, "w", newline="") as f:
-        #     writer = csv.DictWriter(f, fieldnames=self.joint_vels.keys())
-        #     writer.writeheader()
 # -----------------------------------------------------------------------------------------------------------
     ''' Write joint force/torque readings and joint velocities to CSV files '''
     def write_data_files(self) -> None:
         for i, name in enumerate(self.speed_names):
             self.speed[f"{name}_v_wf"] = self.speed_wf[i]
-            
-        # for i, name in enumerate(self.movable_joint_idxs):
-        #     self.joint_speed[f"{name}_jointspeed"] = self.next_vel[i]
             
         for i, name in enumerate(self.ft_names):
             self.ft[f"{name}_contact_ft"] = self.ft_contact[i]
@@ -139,7 +130,6 @@ class Controller(threading.Thread):
         for i, name in enumerate(self.ft_names):
             self.ft[f"{name}_ema_ft"] = self.ft_ema[i]
             
-        # combined = self.ft | self.speed | self.joint_speed
         combined = self.ft | self.speed
         
         if os.path.isfile(self.ft_file):
@@ -177,31 +167,34 @@ class Controller(threading.Thread):
 # -----------------------------------------------------------------------------------------------------------
     def get_contact_ft(self) -> None:
         with self.sim_lock:
-            wrist_pos, wrist_ori = p.getLinkState(self.robot, self.wrist_idx)[:2]
+            wrist_pos, wrist_quat = p.getLinkState(self.robot, self.wrist_idx)[:2]
             wrist_pos = np.array(wrist_pos)
 
-            rot_wrist_world = np.array(p.getMatrixFromQuaternion(wrist_ori)).reshape(3, 3)
+            rot_wrist_world = np.array(p.getMatrixFromQuaternion(wrist_quat)).reshape(3, 3)
             rot_world_to_wrist = rot_wrist_world.T
 
             total_force_world = np.zeros(3)
             total_torque_world = np.zeros(3)
             
             contact_pts = p.getContactPoints(self.robot, self.sim.obj)
-            
+        
+        cntr = 0
         for pt in contact_pts:
+            cntr += 1
             link = pt[3]
-            if link <= self.wrist_idx:
-                print(f"Skipping contact point {link} < wrist_idx {self.wrist_idx}")
-                continue
-
             contact_pos = np.array(pt[5])
             normal = np.array(pt[7])
             fn = pt[9]
+            # print(f"Contact point: {link}, cntr: {cntr}, pos: {contact_pos}, norm: {normal}, fn: {fn}, ff1: {pt[10]}, ff2: {pt[12]}")
 
             lateral_dir1 = np.array(pt[11])
             f_lat1 = pt[10]
             lateral_dir2 = np.array(pt[13])
             f_lat2 = pt[12]
+            
+            if link <= self.wrist_idx:
+                # print(f"Skipping contact point {link} < wrist_idx {self.wrist_idx}")
+                continue
             
             contact_force = fn * normal + f_lat1 * lateral_dir1 + f_lat2 * lateral_dir2
             
@@ -218,12 +211,12 @@ class Controller(threading.Thread):
 # -----------------------------------------------------------------------------------------------------------
     def stop_movement(self) -> None:
         with self.sim_lock:
-            for idx, joint_idx in enumerate(self.movable_joint_idxs):
-                p.setJointMotorControl2(
-                    bodyIndex = self.robot,
-                    jointIndex = joint_idx,
-                    controlMode = p.VELOCITY_CONTROL,
-                    targetVelocity = 0.0)
+            p.setJointMotorControlArray(
+                bodyIndex = self.robot,
+                jointIndices = self.movable_joint_idxs,
+                controlMode = p.VELOCITY_CONTROL,
+                targetVelocities = [0.0] * self.num_movable_joints,
+            )
 # -----------------------------------------------------------------------------------------------------------
     def apply_speed(self) -> None:
         limit_hit = False
@@ -268,6 +261,24 @@ class Controller(threading.Thread):
                 p.resetJointState(self.robot, joint_idx, ik_vals[idx])
             
         self.next_pos = ik_vals
+# -----------------------------------------------------------------------------------------------------------
+    def open_gripper(self) -> None:
+        with self.sim_lock:
+            p.setJointMotorControlArray(
+                bodyIndex = self.robot,
+                jointIndices = self.finger_joints,
+                controlMode = p.POSITION_CONTROL,
+                targetPositions = [0.04] * len(self.finger_joints),
+            )
+# -----------------------------------------------------------------------------------------------------------
+    def check_gripper_pos(self) -> None:
+        with self.sim_lock:
+            gripper_pos = [p.getJointState(self.robot, joint_idx)[0] for joint_idx in self.finger_joints]
+            print(f"Gripper positions: {gripper_pos}")
+            if all(pos >= 0.039 for pos in gripper_pos):
+                return True
+            else:
+                return False
 # -----------------------------------------------------------------------------------------------------------
     def do_move_pos(self, pos: list = [0, 0, 0], orn: list = [0, 0, 0], max_speed = 1.0) -> None:
         with self.sim_lock:
@@ -459,7 +470,8 @@ class Controller(threading.Thread):
                 self.fsm.next_state()
                 
                 match self.mode:
-                    # case 'position':
+                    case 'position':
+                        pass
                         # self.go_to_desired_position()
                     case 'velocity':
                         # self.do_move_velocity(type='linear', speed=[0.0, 0.0, 0.01])
