@@ -1,4 +1,5 @@
 import threading, json, os, csv, time, math, sys
+from typing import Tuple, List
 from collections import defaultdict
 import pybullet as p
 import numpy as np
@@ -39,19 +40,24 @@ class Controller(threading.Thread):
         self.max_joint_velocities = []
         self.ee_link_index = None
         self.wrist_idx = None
+        self.right_idx = None
+        self.left_idx = None
         self.parent_map = defaultdict(list)
         self.get_idxs()
+        self.debug_lines = []
+        self.prev_debug_lines = []
 
         self.num_revolute_joints = len(self.revolute_joint_idx)
         self.num_movable_joints = len(self.movable_joint_idxs)
         
         self.ft_names = ["fx", "fy", "fz", "tx", "ty", "tz"]
         # self.ft_types = ["raw", "comp", "contact"]
-        self.ft_types = ["contact_ft", "ema_ft"]
+        self.ft_types = ["contact_ft", "ema_ft", "feeling_ft"]
         self.ft_keys = [f"{name}_{type}" for type in self.ft_types for name in self.ft_names]
         self.ft = {ft_name: 0 for ft_name in self.ft_keys}
         self.ft_contact = [0.0] * 6
         self.ft_ema = [0.0] * 6
+        self.ft_feeling = [0.0] * 6
         
         # self.joint_vels = {joint: 0 for joint in self.revolute_joint_idx}
 
@@ -63,7 +69,7 @@ class Controller(threading.Thread):
         
         # State variables
         self.mode = 'velocity'
-        self.pause_controls = False
+        self.pause_sim = False
         self.next_vel = [0.0] * self.num_movable_joints
         self.next_pos = [0.0] * self.num_movable_joints # ik_values
         self.next_pos_ee_xyz = [0.0, 0.0, 0.0]
@@ -103,13 +109,22 @@ class Controller(threading.Thread):
                     self.ee_link_index = i
                 if info[1].decode('utf-8') == "panda_hand_joint":
                     self.wrist_idx = i
+                if info[1].decode('utf-8') == "panda_finger_joint1":
+                    self.right_idx = i
+                if info[1].decode('utf-8') == "panda_finger_joint2":
+                    self.left_idx = i
+        
+        get_idxs = (self.right_idx, 
+                    self.left_idx, 
+                    self.wrist_idx, 
+                    self.ee_link_index)
         
         if not self.ee_link_index:
             print("Could not find end effector link index")
             sys.exit(0)
             
-        if not self.wrist_idx:
-            print("Could not find wrist joint index")
+        if not self.wrist_idx or not self.right_idx or not self.left_idx:
+            print("Could not find wrist or finger index")
             sys.exit(0)
 # -----------------------------------------------------------------------------------------------------------
     ''' Initialize CSV file with headers, overwrites/deletes existing file with the same name '''
@@ -123,12 +138,11 @@ class Controller(threading.Thread):
     def write_data_files(self) -> None:
         for i, name in enumerate(self.speed_names):
             self.speed[f"{name}_v_wf"] = self.speed_wf[i]
-            
+                    
         for i, name in enumerate(self.ft_names):
             self.ft[f"{name}_contact_ft"] = self.ft_contact[i]
-            
-        for i, name in enumerate(self.ft_names):
             self.ft[f"{name}_ema_ft"] = self.ft_ema[i]
+            self.ft[f"{name}_feeling_ft"] = self.ft_feeling[i]
             
         combined = self.ft | self.speed
         
@@ -167,7 +181,9 @@ class Controller(threading.Thread):
 # -----------------------------------------------------------------------------------------------------------
     def get_contact_ft(self) -> None:
         with self.sim_lock:
-            wrist_pos, wrist_quat = p.getLinkState(self.robot, self.wrist_idx)[:2]
+            link_state = p.getLinkState(self.robot, self.wrist_idx, computeForwardKinematics=True)
+            # wrist_pos, wrist_quat = p.getLinkState(self.robot, self.wrist_idx)[:2]
+            wrist_pos, wrist_quat = link_state[4], link_state[5]
             wrist_pos = np.array(wrist_pos)
 
             rot_wrist_world = np.array(p.getMatrixFromQuaternion(wrist_quat)).reshape(3, 3)
@@ -179,13 +195,16 @@ class Controller(threading.Thread):
             contact_pts = p.getContactPoints(self.robot, self.sim.obj)
         
         cntr = 0
+        if len(contact_pts) <= 0:
+            self.ft_contact = [0.0] * 6
+            return
+        
         for pt in contact_pts:
             cntr += 1
             link = pt[3]
             contact_pos = np.array(pt[5])
             normal = np.array(pt[7])
             fn = pt[9]
-            # print(f"Contact point: {link}, cntr: {cntr}, pos: {contact_pos}, norm: {normal}, fn: {fn}, ff1: {pt[10]}, ff2: {pt[12]}")
 
             lateral_dir1 = np.array(pt[11])
             f_lat1 = pt[10]
@@ -193,7 +212,6 @@ class Controller(threading.Thread):
             f_lat2 = pt[12]
             
             if link <= self.wrist_idx:
-                # print(f"Skipping contact point {link} < wrist_idx {self.wrist_idx}")
                 continue
             
             contact_force = fn * normal + f_lat1 * lateral_dir1 + f_lat2 * lateral_dir2
@@ -206,8 +224,41 @@ class Controller(threading.Thread):
                 
         total_force_local = rot_world_to_wrist @ total_force_world
         total_torque_local = rot_world_to_wrist @ total_torque_world
-
+        
         self.ft_contact = list(total_force_local) + list(total_torque_local)
+        
+        # Draw debug line
+        with self.sim_lock:
+            # debug direction
+            start_pos = wrist_pos
+            
+            for i in range(3):                
+                force_world = np.zeros(3)
+                force_world[i] = total_force_local[i]
+                force_world = rot_wrist_world @ force_world
+                end_pos_force = start_pos + force_world
+
+                line = p.addUserDebugLine(start_pos,
+                                end_pos_force,
+                                lineColorRGB=[0, 0.5, 1],
+                                lineWidth=7,
+                                lifeTime=0
+                )
+                self.debug_lines.append(line)
+
+                torque_world = np.zeros(3)
+                torque_world[i] = total_torque_local[i]
+                torque_world = rot_wrist_world @ torque_world
+                end_pos_torque = start_pos + torque_world
+
+                line = p.addUserDebugLine(start_pos,
+                                end_pos_torque,
+                                lineColorRGB=[0, 1, 0.5],
+                                lineWidth=7,
+                                lifeTime=0
+                )
+                self.debug_lines.append(line)
+            
 # -----------------------------------------------------------------------------------------------------------
     def stop_movement(self) -> None:
         with self.sim_lock:
@@ -320,7 +371,75 @@ class Controller(threading.Thread):
         
         return pos_error, euler_error
 # -----------------------------------------------------------------------------------------------------------
-    def do_move_velocity(self, v_des:list = [0, 0, 0], w_des: list = [0, 0, 0], link = 'wrist', wf = False) -> None:
+    def get_fingertip_pos(self):
+        finger_length = 0.055
+        finger_side_offset = 0.008
+        right_tip_local = [0, finger_side_offset, finger_length]
+        left_tip_local = [0, -finger_side_offset, finger_length]
+        
+        with self.sim_lock:
+            link_state = p.getLinkState(self.robot, self.wrist_idx, computeForwardKinematics=True)
+            wrist_pos_wf, wrist_orn_wf = link_state[4], link_state[5]
+            
+            link_state = p.getLinkState(self.robot, self.left_idx, computeForwardKinematics=True)
+
+            left_base_pos_wf, left_base_orn_wf = link_state[4], link_state[5]
+            left_tip_pos_wf, _ = p.multiplyTransforms(
+                left_base_pos_wf, left_base_orn_wf,
+                left_tip_local,   [0,0,0,1]
+            )
+            
+            link_state = p.getLinkState(self.robot, self.right_idx, computeForwardKinematics=True)
+            right_base_pos_wf, right_base_orn_wf = link_state[4], link_state[5]
+            right_tip_pos_wf, _ = p.multiplyTransforms(
+                right_base_pos_wf, right_base_orn_wf,
+                right_tip_local,  [0,0,0,1]
+            )
+            
+            p.addUserDebugLine(wrist_pos_wf, left_tip_pos_wf,  [1, 0, 0], 5, lifeTime=0.1)
+            p.addUserDebugLine(wrist_pos_wf, right_tip_pos_wf, [0, 1, 0], 5, lifeTime=0.1)
+        
+        return right_tip_pos_wf, left_tip_pos_wf
+# -----------------------------------------------------------------------------------------------------------
+    def get_fingertip_pos_wrist_frame(self):
+        right_tip_pos_wf, left_tip_pos_wf = self.get_fingertip_pos()
+        with self.sim_lock:
+            link_state = p.getLinkState(self.robot, self.wrist_idx, computeForwardKinematics=True)
+            wrist_pos_wf, wrist_orn_wf = link_state[4], link_state[5]
+            
+            inv_pos, inv_orn = p.invertTransform(wrist_pos_wf, wrist_orn_wf)
+            
+            right_tip_pos_wrist_frame, _ = p.multiplyTransforms(
+                inv_pos, inv_orn,
+                right_tip_pos_wf, [0, 0, 0, 1]
+            )
+            
+            left_tip_pos_wrist_frame, _ = p.multiplyTransforms(
+                inv_pos, inv_orn,
+                left_tip_pos_wf, [0, 0, 0, 1]
+            )
+        
+        return right_tip_pos_wrist_frame, left_tip_pos_wrist_frame
+# -----------------------------------------------------------------------------------------------------------
+    # def calc_spin_around(self, w_des, right_finger = True):
+    #     w_des_local = np.array(w_des)
+        
+    #     right_tip_pos_wrist, left_tip_pos_wrist = self.get_fingertip_pos_wrist_frame()
+    #     r = right_tip_pos_wrist if right_finger else left_tip_pos_wrist
+    #     r = np.array(r)
+                    
+    #     v_des_local = -np.cross(w_des_local, r)
+    #     print(f"r: {r}")
+    #     print(f"spin around v_des: {v_des_local}, w_des: {w_des_local}")
+        
+    #     self.do_move_velocity(v_des=v_des_local.tolist(), w_des=w_des_local.tolist(), link='wrist', wf=False)
+# -----------------------------------------------------------------------------------------------------------
+    def do_move_velocity(self, 
+                         v_des, 
+                         w_des, 
+                         link = 'wrist', 
+                         wf = False) -> None:
+        
         if link == 'wrist':
             link = self.wrist_idx
         else: # link == 'ee':
@@ -457,16 +576,22 @@ class Controller(threading.Thread):
 # -----------------------------------------------------------------------------------------------------------
     def run(self) -> None:
         while not self.shutdown_event.is_set():
-            with self.sim_lock:
+            with self.sim_lock:                
+                qKey = ord('q')
                 keys = p.getKeyboardEvents()
-            if ord('q') in keys:
-                self.pause_controls = True
-                self.stop_movement()
-            if ord('e') in keys:
-                self.pause_controls = False
-            
-            if self.pause_controls == False:
+                if qKey in keys and keys[qKey] & p.KEY_WAS_TRIGGERED:
+                    self.pause_sim = not self.pause_sim
+                    print(f"Got input to {'pause' if self.pause_sim else 'unpause'} simulation")
+
+            if self.pause_sim == False:
+                
                 self.get_contact_ft()
+                for i in self.prev_debug_lines:
+                    p.removeUserDebugItem(i)
+                    
+                self.prev_debug_lines = self.debug_lines
+                self.debug_lines = []
+                
                 self.fsm.next_state()
                 
                 match self.mode:
@@ -480,13 +605,14 @@ class Controller(threading.Thread):
                         # print("Unknown mode, stopping movement...")
                         # self.stop_movement()
                         pass
+                
+                self.write_wf_position()
+                self.write_data_files()
+                p.stepSimulation()
             else:
-                pass
+                continue
             #     self.stop_movement()
             
-            self.write_wf_position()
-            self.write_data_files()
-            p.stepSimulation()
             time.sleep(1.0/240.0)
             
         print("Exiting controller thread...")

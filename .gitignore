@@ -11,3 +11,5 @@ make_*.py
 pybullet-object-models
 mujoco*
 uninstall.txt
+mjc*
+pybullet_sim/data

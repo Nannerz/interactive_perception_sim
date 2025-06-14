@@ -1,6 +1,6 @@
 import pybullet as p
 import pybullet_data
-import sys, threading, os
+import sys, threading, os, math
 from pybullet_object_models import ycb_objects
 # -----------------------------------------------------------------------------------------------------------
 class Simulation():
@@ -33,7 +33,7 @@ class Simulation():
             for link in [9, 10]:        
                 p.changeDynamics(bodyUniqueId =self.robot,
                                 linkIndex=link,
-                                contactStiffness=1e4,
+                                contactStiffness=7.5e2,
                                 contactDamping=0.5,
                                 )
             num_joints = p.getNumJoints(self.robot)
@@ -46,7 +46,7 @@ class Simulation():
     def create_object(self) -> None:
         with self.sim_lock:
             flags = p.URDF_USE_INERTIA_FROM_FILE
-            base_orn = [0, 0, 90 * 3.14159/180.0]
+            base_orn = [0, 0, 70 * math.pi/180]
             base_quat = p.getQuaternionFromEuler(base_orn)
             base_pos = [0.8, 0.04, 0.08]
             self.obj = p.loadURDF(os.path.join(ycb_objects.getDataPath(), 'YcbMustardBottle', "model.urdf"), 
@@ -58,7 +58,7 @@ class Simulation():
             p.changeDynamics(bodyUniqueId=self.obj,
                             linkIndex=-1,
                             contactStiffness=1e4,
-                            contactDamping=0.5
+                            contactDamping=0.7
                             )
             p.setPhysicsEngineParameter(
                 numSolverIterations=50,
