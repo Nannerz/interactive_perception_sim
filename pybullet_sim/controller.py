@@ -10,7 +10,8 @@ from cvxopt import matrix, solvers
 class Controller(threading.Thread):
     def __init__(self, 
                  sim: Simulation, 
-                 shutdown_event: threading.Event, 
+                 shutdown_event: threading.Event,
+                 draw_debug: bool = False,
                  **kwargs) -> None:
         
         super().__init__(**kwargs)
@@ -44,6 +45,7 @@ class Controller(threading.Thread):
         self.left_idx = None
         self.parent_map = defaultdict(list)
         self.get_idxs()
+        self.draw_debug = draw_debug
         self.debug_lines = []
         self.prev_debug_lines = []
 
@@ -62,6 +64,7 @@ class Controller(threading.Thread):
         # self.joint_vels = {joint: 0 for joint in self.revolute_joint_idx}
 
         self.data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+        os.makedirs(self.data_path, exist_ok=True)
         
         self.ft_file = os.path.join(self.data_path, "ft_data.csv")
         self.pos_file = os.path.join(self.data_path, "pos.json")
@@ -228,36 +231,65 @@ class Controller(threading.Thread):
         self.ft_contact = list(total_force_local) + list(total_torque_local)
         
         # Draw debug line
-        with self.sim_lock:
-            # debug direction
-            start_pos = wrist_pos
-            
-            for i in range(3):                
-                force_world = np.zeros(3)
-                force_world[i] = total_force_local[i]
-                force_world = rot_wrist_world @ force_world
-                end_pos_force = start_pos + force_world
+        if self.draw_debug:
+            with self.sim_lock:
+                # debug direction
+                start_pos = contact_pos
+                
+                for i in range(3):                
+                    force_world = np.zeros(3)
+                    force_world[i] = total_force_world[i]
+                    end_pos_force = start_pos + force_world
 
-                line = p.addUserDebugLine(start_pos,
-                                end_pos_force,
-                                lineColorRGB=[0, 0.5, 1],
-                                lineWidth=7,
-                                lifeTime=0
-                )
-                self.debug_lines.append(line)
+                    line = p.addUserDebugLine(start_pos,
+                                    end_pos_force,
+                                    lineColorRGB=[0, 0.5, 1],
+                                    lineWidth=5,
+                                    lifeTime=0
+                    )
+                    self.debug_lines.append(line)
 
-                torque_world = np.zeros(3)
-                torque_world[i] = total_torque_local[i]
-                torque_world = rot_wrist_world @ torque_world
-                end_pos_torque = start_pos + torque_world
+                    torque_world = np.zeros(3)
+                    torque_world[i] = total_torque_world[i]
+                    end_pos_torque = start_pos + torque_world
 
-                line = p.addUserDebugLine(start_pos,
-                                end_pos_torque,
-                                lineColorRGB=[0, 1, 0.5],
-                                lineWidth=7,
-                                lifeTime=0
-                )
-                self.debug_lines.append(line)
+                    line = p.addUserDebugLine(start_pos,
+                                    end_pos_torque,
+                                    lineColorRGB=[0, 1, 0.5],
+                                    lineWidth=8,
+                                    lifeTime=0
+                    )
+                    self.debug_lines.append(line)                
+                
+                # # debug direction
+                # start_pos = wrist_pos
+                
+                # for i in range(3):                
+                #     force_world = np.zeros(3)
+                #     force_world[i] = total_force_local[i]
+                #     force_world = rot_wrist_world @ force_world
+                #     end_pos_force = start_pos + force_world
+
+                #     line = p.addUserDebugLine(start_pos,
+                #                     end_pos_force,
+                #                     lineColorRGB=[0, 0.5, 1],
+                #                     lineWidth=7,
+                #                     lifeTime=0
+                #     )
+                #     self.debug_lines.append(line)
+
+                #     torque_world = np.zeros(3)
+                #     torque_world[i] = total_torque_local[i]
+                #     torque_world = rot_wrist_world @ torque_world
+                #     end_pos_torque = start_pos + torque_world
+
+                #     line = p.addUserDebugLine(start_pos,
+                #                     end_pos_torque,
+                #                     lineColorRGB=[0, 1, 0.5],
+                #                     lineWidth=7,
+                #                     lifeTime=0
+                #     )
+                #     self.debug_lines.append(line)
             
 # -----------------------------------------------------------------------------------------------------------
     def stop_movement(self) -> None:
@@ -378,9 +410,6 @@ class Controller(threading.Thread):
         left_tip_local = [0, -finger_side_offset, finger_length]
         
         with self.sim_lock:
-            link_state = p.getLinkState(self.robot, self.wrist_idx, computeForwardKinematics=True)
-            wrist_pos_wf, wrist_orn_wf = link_state[4], link_state[5]
-            
             link_state = p.getLinkState(self.robot, self.left_idx, computeForwardKinematics=True)
 
             left_base_pos_wf, left_base_orn_wf = link_state[4], link_state[5]
@@ -395,9 +424,12 @@ class Controller(threading.Thread):
                 right_base_pos_wf, right_base_orn_wf,
                 right_tip_local,  [0,0,0,1]
             )
-            
-            p.addUserDebugLine(wrist_pos_wf, left_tip_pos_wf,  [1, 0, 0], 5, lifeTime=0.1)
-            p.addUserDebugLine(wrist_pos_wf, right_tip_pos_wf, [0, 1, 0], 5, lifeTime=0.1)
+            # if self.draw_debug:
+            #     link_state = p.getLinkState(self.robot, self.wrist_idx, computeForwardKinematics=True)
+            #     wrist_pos_wf, wrist_orn_wf = link_state[4], link_state[5]
+                
+            #     p.addUserDebugLine(wrist_pos_wf, left_tip_pos_wf,  [1, 0, 0], 5, lifeTime=0.1)
+            #     p.addUserDebugLine(wrist_pos_wf, right_tip_pos_wf, [0, 1, 0], 5, lifeTime=0.1)
         
         return right_tip_pos_wf, left_tip_pos_wf
 # -----------------------------------------------------------------------------------------------------------
@@ -462,21 +494,22 @@ class Controller(threading.Thread):
                 w_wf = R_wrist2world.dot(np.array(w_des))                
             
             # debug direction
-            start_pos = np.array(ee_pos_wf)
-            end_pos = start_pos + v_wf * 0.5
-            p.addUserDebugLine(start_pos,
-                               end_pos,
-                               lineColorRGB=[1, 0, 0],
-                               lineWidth=3,
-                               lifeTime=0.05
-            )
-            end_pos = start_pos + w_wf * 0.5
-            p.addUserDebugLine(start_pos,
-                               end_pos,
-                               lineColorRGB=[0, 1, 0],
-                               lineWidth=3,
-                               lifeTime=0.05
-            )
+            if self.draw_debug:
+                start_pos = np.array(ee_pos_wf)
+                end_pos = start_pos + v_wf * 0.5
+                p.addUserDebugLine(start_pos,
+                                end_pos,
+                                lineColorRGB=[1, 0, 0],
+                                lineWidth=3,
+                                lifeTime=0.05
+                )
+                end_pos = start_pos + w_wf * 0.5
+                p.addUserDebugLine(start_pos,
+                                end_pos,
+                                lineColorRGB=[0, 1, 0],
+                                lineWidth=3,
+                                lifeTime=0.05
+                )
             
             speed_wf = np.hstack((v_wf, w_wf))
             self.speed_wf = speed_wf

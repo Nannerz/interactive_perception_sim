@@ -35,7 +35,10 @@ class Simulation():
                                 linkIndex=link,
                                 contactStiffness=7.5e2,
                                 contactDamping=0.5,
+                                # collisionMargin=0.0005,
                                 )
+                dyn = p.getDynamicsInfo(self.robot, link)
+                print(f"Link {link} dynamics: {dyn}")
             num_joints = p.getNumJoints(self.robot)
             for i in range(0, num_joints):
                 p.enableJointForceTorqueSensor(self.robot, i, 1)
@@ -46,9 +49,10 @@ class Simulation():
     def create_object(self) -> None:
         with self.sim_lock:
             flags = p.URDF_USE_INERTIA_FROM_FILE
-            base_orn = [0, 0, 70 * math.pi/180]
+            # base_orn = [0, 0, 70 * math.pi/180]
+            base_orn = [0, 0, 20 * math.pi/180]
             base_quat = p.getQuaternionFromEuler(base_orn)
-            base_pos = [0.8, 0.04, 0.08]
+            base_pos = [0.8, 0.065, 0.08]
             self.obj = p.loadURDF(os.path.join(ycb_objects.getDataPath(), 'YcbMustardBottle', "model.urdf"), 
                                   #   [1., 0.0, 0.8], 
                                   basePosition=base_pos,
@@ -58,8 +62,11 @@ class Simulation():
             p.changeDynamics(bodyUniqueId=self.obj,
                             linkIndex=-1,
                             contactStiffness=1e4,
-                            contactDamping=0.7
+                            contactDamping=0.7,
+                            collisionMargin=0.0005,
                             )
+            dyn = p.getDynamicsInfo(self.obj, -1)
+            print(f"Obj dynamics: {dyn}")
             p.setPhysicsEngineParameter(
                 numSolverIterations=50,
                 contactERP=0.2,      # lower ERP ⇒ softer penetrations

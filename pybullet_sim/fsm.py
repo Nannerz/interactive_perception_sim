@@ -30,11 +30,11 @@ class FSM():
         
         # Wiggle
         self.wiggle_cntr = 0
-        self.wiggle_max = 40
+        self.wiggle_max = 24
         self.wiggle_dir = 1
         self.wiggle_samples = 5
         self.doing_wiggle = False
-        self.wiggle_w = 0.5
+        self.wiggle_w = 0.35
         
         # Yaw align
         self.align_yaw = False
@@ -42,6 +42,14 @@ class FSM():
         self.yaw_max = 10
         self.yaw_algn_w = -0.5
         self.yaw_algn_kp = 9.6
+        self.yaw_algn_thresh = 0.02
+        self.yaw_aligned = False
+        
+        # Pitch align
+        self.pitch_algn_w = 0.5
+        self.pitch_algn_kp = 3.2
+        self.pitch_algn_thresh = 0.06
+        self.pitch_aligned = False
     
         # Force/torque
         self.ft_contact = np.zeros(6)
@@ -89,8 +97,7 @@ class FSM():
 # -----------------------------------------------------------------------------------------------------------
     def state_test(self) -> None:
         self.controller.mode = 'velocity'
-        w_des = [1.0, 0, 0]
-        self.controller.do_spin_around(w_des=w_des)
+        self.test_pitch()
 # -----------------------------------------------------------------------------------------------------------
     def state_initial_pos(self) -> None:
         self.controller.mode = 'velocity'
@@ -125,17 +132,26 @@ class FSM():
         speed_wiggle = [0, 0, 0, 0, 0, 0]
         if self.is_touching or self.doing_wiggle:
             speed_wiggle = self.do_wiggle()
+
+            # Max samples for feeling force should be wiggle samples * wiggle_max
+            if self.ft_feeling_sum.shape[0] >= (self.wiggle_samples * self.wiggle_max):
+                self.ft_feeling_sum = self.ft_feeling_sum[1:]
+                if self.wiggle_cntr == 0:
+                    self.align_yaw = True
+            self.ft_feeling_sum = np.append(self.ft_feeling_sum, self.ft_ema.reshape(1,6), axis=0)
         
         self.ft_feeling = self.ft_feeling_sum.mean(axis=0)
         self.controller.ft_feeling = self.ft_feeling.tolist()
         
-        # Align the yaw if we've gotten enough wiggling samples
         speed_yaw = [0, 0, 0, 0, 0, 0]
         if self.align_yaw:
             speed_yaw = self.do_align_yaw()
         
+        speed_pitch = [0, 0, 0, 0, 0, 0]
+        # speed_pitch = self.do_align_pitch()
+        
         # Sum up all the speed components
-        speed_total = [speed_contact[i] + speed_wiggle[i] + speed_yaw[i] for i in range(len(speed_contact))]
+        speed_total = [speed_contact[i] + speed_wiggle[i] + speed_yaw[i] + speed_pitch[i] for i in range(len(speed_contact))]
         
         # Apply speed
         self.controller.mode = 'velocity'
@@ -167,17 +183,9 @@ class FSM():
 # -----------------------------------------------------------------------------------------------------------
     def do_wiggle(self) -> list:
         self.doing_wiggle = True
-        
-        # Max samples for feeling force should be wiggle samples * wiggle_max
-        if self.ft_feeling_sum.shape[0] >= (self.wiggle_samples * self.wiggle_max):
-            self.ft_feeling_sum = self.ft_feeling_sum[1:]
-            if self.wiggle_cntr == 0:
-                self.align_yaw = True
                 
         self.wiggle_cntr += 1
-        
-        self.ft_feeling_sum = np.append(self.ft_feeling_sum, self.ft_ema.reshape(1,6), axis=0)
-        
+                
         if self.wiggle_cntr <= self.wiggle_max/4 or self.wiggle_cntr > 3 * self.wiggle_max/4:
             self.wiggle_dir = -1
         else:
@@ -187,39 +195,58 @@ class FSM():
             self.wiggle_cntr = 0
             self.doing_wiggle = False
 
-        v_ee = [0, 0, 0]
-        w_ee = [self.wiggle_w * self.wiggle_dir, 0, 0]
-        # w_ee = [0, 0, 0]
+        v = [0, 0, 0]
+        w = [self.wiggle_w * self.wiggle_dir, 0, 0]
         
-        # self.controller.do_move_velocity(v_ee=v_ee, w_ee=w_ee)
-        print(f"DEBUG wiggle v: {v_ee}, w: {w_ee}, wiggle_cntr: {self.wiggle_cntr}, align_yaw: {self.align_yaw}")
-        return v_ee + w_ee
+        # print(f"DEBUG wiggle v: {v_ee}, w: {w_ee}, wiggle_cntr: {self.wiggle_cntr}, align_yaw: {self.align_yaw}")
+        return v + w
 # -----------------------------------------------------------------------------------------------------------
     def do_align_yaw(self):
-        yaw_speed = self.yaw_algn_kp * self.yaw_algn_w * self.ft_feeling[fy]
-            
+        if abs(self.ft_feeling[fy]) > self.yaw_algn_thresh:
+            yaw_speed = self.yaw_algn_kp * self.yaw_algn_w * self.ft_feeling[fy] * -1.0
+            self.yaw_aligned = False
+        else:
+            self.yaw_aligned = True
+            return [0, 0, 0, 0, 0, 0]
+        
+        omega = np.array([yaw_speed, 0, 0])
+
         if self.ft_feeling[tx] > 0:
             right_finger = True
         else:
-            right_finger = False
+            right_finger = False 
+                           
+        right_tip, left_tip = self.controller.get_fingertip_pos_wrist_frame()
+        r = right_tip if right_finger else left_tip
+        r = np.array(r)        
 
-        w_des = np.array([yaw_speed, 0, 0])
-                
-        right_tip_pos_wrist_frame, left_tip_pos_wrist_frame = self.controller.get_fingertip_pos_wrist_frame()
-        r = right_tip_pos_wrist_frame if right_finger else left_tip_pos_wrist_frame
-        r = np.array(r)
-                    
-        v_des = -np.cross(w_des, r)
+        v = -np.cross(omega, r)
         
         self.yaw_cntr += 1
         if self.yaw_cntr >= self.yaw_max:
             self.yaw_cntr = 0
             self.align_yaw = False
         
-        print(f"DEBUG yaw align v: {v_des}, w: {w_des}, yaw_speed: {yaw_speed}, yaw_cntr: {self.yaw_cntr}, align_yaw: {self.align_yaw}")
-        return v_des.tolist() + w_des.tolist()
+        print(f"DEBUG yaw align v: {v}, w: {omega}, cntr: {self.yaw_cntr}, do align: {self.align_yaw}, right_finger: {right_finger}")
+        return v.tolist() + omega.tolist()
 # -----------------------------------------------------------------------------------------------------------
-    def test_wiggle(self) -> None:
-        twist_wiggle = self.do_wiggle()
-        self.controller.do_move_velocity(v_des=twist_wiggle[:3], w_des=twist_wiggle[3:], link='wrist', wf=False)
+    def do_align_pitch(self) -> None:
+        
+        if abs(self.ft_feeling[fz]) > self.pitch_algn_thresh:
+            pitch_speed = self.pitch_algn_kp * self.pitch_algn_w * self.ft_feeling[fz] * -1.0
+            self.pitch_aligned = False
+        else:
+            self.pitch_aligned = True
+            return [0, 0, 0, 0, 0, 0]
+
+        omega = np.array([0, pitch_speed, 0])
+        
+        right_tip, left_tip = self.controller.get_fingertip_pos_wrist_frame()
+        right = np.array(right_tip)
+        left = np.array(left_tip)
+        r = (right + left) / 2
+        v = -np.cross(omega, r)
+    
+        print(f"DEBUG pitch align v: {v}, w: {omega}, r: {r}, aligned: {self.pitch_aligned}")
+        return v.tolist() + omega.tolist()
 # -----------------------------------------------------------------------------------------------------------
