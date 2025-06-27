@@ -57,7 +57,7 @@ class Controller(threading.Thread):
         self.ft_types = ["contact_ft", "ema_ft", "feeling_ft"]
         self.ft_keys = [f"{name}_{type}" for type in self.ft_types for name in self.ft_names]
         self.ft = {ft_name: 0 for ft_name in self.ft_keys}
-        self.ft_contact = [0.0] * 6
+        self.ft_contact_wrist = [0.0] * 6
         self.ft_ema = [0.0] * 6
         self.ft_feeling = [0.0] * 6
         
@@ -79,8 +79,9 @@ class Controller(threading.Thread):
         self.next_orn_ee = [0.0, 0.0, 0.0]
         self.vel_err = [0.0] * self.num_movable_joints
         self.speed_wf = [0.0] * 6
+        self.speed_wrist = [0.0] * 6
         self.speed_names = ["vx", "vy", "vz", "wx", "wy", "wz"]
-        self.speed_types = ["v_wf"]
+        self.speed_types = ["v_wf", "v_wrist"]
         self.speed_keys = [f"{name}_{type}" for type in self.speed_types for name in self.speed_names]
         self.speed = {name: 0.0 for name in self.speed_keys}
         
@@ -141,9 +142,10 @@ class Controller(threading.Thread):
     def write_data_files(self) -> None:
         for i, name in enumerate(self.speed_names):
             self.speed[f"{name}_v_wf"] = self.speed_wf[i]
+            self.speed[f"{name}_v_wrist"] = self.speed_wrist[i]
                     
         for i, name in enumerate(self.ft_names):
-            self.ft[f"{name}_contact_ft"] = self.ft_contact[i]
+            self.ft[f"{name}_contact_ft"] = self.ft_contact_wrist[i]
             self.ft[f"{name}_ema_ft"] = self.ft_ema[i]
             self.ft[f"{name}_feeling_ft"] = self.ft_feeling[i]
             
@@ -199,7 +201,7 @@ class Controller(threading.Thread):
         
         cntr = 0
         if len(contact_pts) <= 0:
-            self.ft_contact = [0.0] * 6
+            self.ft_contact_wrist = [0.0] * 6
             return
         
         for pt in contact_pts:
@@ -228,7 +230,7 @@ class Controller(threading.Thread):
         total_force_local = rot_world_to_wrist @ total_force_world
         total_torque_local = rot_world_to_wrist @ total_torque_world
         
-        self.ft_contact = list(total_force_local) + list(total_torque_local)
+        self.ft_contact_wrist = list(total_force_local) + list(total_torque_local)
         
         # Draw debug line
         if self.draw_debug:
@@ -237,13 +239,21 @@ class Controller(threading.Thread):
                 start_pos = contact_pos
                 
                 for i in range(3):                
-                    force_world = np.zeros(3)
-                    force_world[i] = total_force_world[i]
+                    # force_world = np.zeros(3)
+                    # force_world[i] = total_force_world[i]
+                    # end_pos_force = start_pos + force_world
+                    
+                    force_local = np.zeros(3)
+                    force_local[i] = total_force_local[i]
+                    force_world = rot_wrist_world @ force_local
                     end_pos_force = start_pos + force_world
+                    
+                    linecolor = [0.0, 0.0, 0.0]
+                    linecolor[i] = 0.75
 
                     line = p.addUserDebugLine(start_pos,
                                     end_pos_force,
-                                    lineColorRGB=[0, 0.5, 1],
+                                    lineColorRGB=linecolor,
                                     lineWidth=5,
                                     lifeTime=0
                     )
@@ -252,10 +262,12 @@ class Controller(threading.Thread):
                     torque_world = np.zeros(3)
                     torque_world[i] = total_torque_world[i]
                     end_pos_torque = start_pos + torque_world
+                    
+                    linecolor[i] = 0.25
 
                     line = p.addUserDebugLine(start_pos,
                                     end_pos_torque,
-                                    lineColorRGB=[0, 1, 0.5],
+                                    lineColorRGB=linecolor,
                                     lineWidth=8,
                                     lifeTime=0
                     )
@@ -485,10 +497,13 @@ class Controller(threading.Thread):
             
             # direction is just + or - 1
             # convert speed to world frame
+            self.speed_wrist = [0.0] * 6
             if wf:
                 v_wf = np.array(v_des)
                 w_wf = np.array(w_des)
             else:
+                self.speed_wrist[0:3] = v_des
+                self.speed_wrist[3:6] = w_des
                 R_wrist2world = np.array(p.getMatrixFromQuaternion(ee_orn_wf)).reshape(3,3)
                 v_wf = R_wrist2world.dot(np.array(v_des))
                 w_wf = R_wrist2world.dot(np.array(w_des))                
@@ -497,19 +512,22 @@ class Controller(threading.Thread):
             if self.draw_debug:
                 start_pos = np.array(ee_pos_wf)
                 end_pos = start_pos + v_wf * 0.5
-                p.addUserDebugLine(start_pos,
+                line = p.addUserDebugLine(start_pos,
                                 end_pos,
                                 lineColorRGB=[1, 0, 0],
                                 lineWidth=3,
-                                lifeTime=0.05
+                                lifeTime=0
                 )
+                self.debug_lines.append(line)
+                
                 end_pos = start_pos + w_wf * 0.5
-                p.addUserDebugLine(start_pos,
+                line = p.addUserDebugLine(start_pos,
                                 end_pos,
                                 lineColorRGB=[0, 1, 0],
                                 lineWidth=3,
-                                lifeTime=0.05
+                                lifeTime=0
                 )
+                self.debug_lines.append(line)
             
             speed_wf = np.hstack((v_wf, w_wf))
             self.speed_wf = speed_wf
