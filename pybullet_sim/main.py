@@ -21,32 +21,37 @@ class App:
 
     def cleanup(self, processes=None, threads=None, signum=None, frame=None) -> None:
         print("Cleaning up processes")
-        for proc in processes:
-            # only terminate if still running
-            if isinstance(proc, subprocess.Popen):
-                if proc.poll() is None:
-                    proc.terminate()
-                    proc.wait()
-            elif isinstance(proc, Process):  # multiprocessing.Process
-                if proc.is_alive():
-                    proc.terminate()
-                    proc.join()
-            else:
-                print(f"Unknown process type: {type(proc)}")
+        if processes is not None:
+            for proc in processes:
+                # only terminate if still running
+                if isinstance(proc, subprocess.Popen):
+                    if proc.poll() is None:
+                        proc.terminate()
+                        proc.wait()
+                elif isinstance(proc, Process):  # multiprocessing.Process
+                    if proc.is_alive():
+                        proc.terminate()
+                        proc.join()
+                else:
+                    print(f"Unknown process type: {type(proc)}")
 
         print("Cleaning up threads")
         self.shutdown_event.set()
-        for thread in threads:
-            try:
-                thread.join()
-                print(f"Thread {thread} finished.")
-            except:
-                pass  # thread already finished, ignore
+        if threads is not None:
+            for thread in threads:
+                try:
+                    thread.join()
+                    print(f"Thread {thread} finished.")
+                except:
+                    pass  # thread already finished, ignore
 
         print("All threads finished.")
 
         try:
-            with self.sim_lock:
+            if self.sim_lock is not None:
+                with self.sim_lock:
+                    p.disconnect()
+            else:
                 p.disconnect()
         except:  # already disconnected, ignore
             pass
@@ -93,7 +98,7 @@ class App:
         self.sim_lock = sim.sim_lock
 
         controller_thread = Controller(
-            sim=sim, shutdown_event=self.shutdown_event, draw_debug=True
+            sim=sim, shutdown_event=self.shutdown_event, draw_debug=True, do_timers=False
         )
         controller_thread.start()
         threads.append(controller_thread)

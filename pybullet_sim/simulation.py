@@ -25,7 +25,7 @@ class Simulation:
             p.setAdditionalSearchPath(pybullet_data.getDataPath())
             p.resetSimulation(p.RESET_USE_DEFORMABLE_WORLD)
             p.setGravity(0, 0, self.gravity)
-            p.setRealTimeSimulation(0)
+            p.setRealTimeSimulation(1)
             p.resetDebugVisualizerCamera(
                 cameraDistance=1.2,
                 cameraYaw=50,
@@ -46,7 +46,8 @@ class Simulation:
                 p.changeDynamics(
                     bodyUniqueId=self.robot,
                     linkIndex=link,
-                    contactStiffness=7.5e2,
+                    # contactStiffness=7.5e2,
+                    contactStiffness=1e4,
                     contactDamping=0.5,
                     # collisionMargin=0.0005,
                 )
@@ -67,9 +68,9 @@ class Simulation:
         # self.obj = p.loadURDF(os.path.join(ycb_objects.getDataPath(),
         # 'YcbTomatoSoupCan', "model.urdf"),
         if myobj == "mustard_bottle":
-            # base_orn = [0, 0, 20 * math.pi/180] # 20 degrees around z-axis
-            # base_pos = [0.8, 0.065, 0.08]
-            self.obj = self.create_mustard_bottle(flags)
+            base_orn = [0, 0, 0]
+            base_pos = [0.8, 0.045, 0.06]
+            self.obj = self.create_mustard_bottle(flags, base_orn=base_orn, base_pos=base_pos)
 
         p.setPhysicsEngineParameter(
             numSolverIterations=50,
@@ -93,7 +94,8 @@ class Simulation:
         p.changeDynamics(
             bodyUniqueId=obj,
             linkIndex=-1,
-            contactStiffness=1e4,
+            # contactStiffness=1e4,
+            contactStiffness=2e4,
             contactDamping=0.7,
             collisionMargin=0.0005,
         )

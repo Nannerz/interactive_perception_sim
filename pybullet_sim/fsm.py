@@ -1,4 +1,5 @@
 import math
+import time
 import numpy as np
 from typing import List
 
@@ -15,47 +16,52 @@ class FSM:
 
         self.state = "start"
         self.controller = controller
+        self.sim_lock = controller.sim_lock
+        self.do_timers = controller.do_timers
+        self.interval = controller.interval
+        self.thread_cntr_max = controller.thread_cntr_max
         self.initial_x = initial_x
         self.initial_y = initial_y
         self.initial_z = initial_z
-        self.sim_lock = controller.sim_lock
         self.startup_cntr = 0
         self.orn = [0, 0, 0, 1]
+        
+        per_sec = 10.0/1000.0
 
         # Forward/keep contact
-        self.forward_v = 0.1
+        self.forward_v = 1.5 * per_sec
         self.forward_kp = 2.6
         self.touched_once = False
         self.is_touching = False
 
         # Wiggle
         self.wiggle_cntr = 0
-        self.wiggle_max = 24
+        self.wiggle_max = 240
         self.wiggle_dir = 1
         self.wiggle_samples = 5
         self.doing_wiggle = False
-        self.wiggle_w_yaw = 0.35
-        self.wiggle_w_pitch = 0.25
+        self.wiggle_w_yaw = 1.5 * per_sec
+        self.wiggle_w_pitch = 1.5 * per_sec
         self.wiggle_yaw = True
         self.wiggle_pitch = True
 
         # Yaw align
         self.align_axes = False
-        self.yaw_algn_w = 0.5
+        self.yaw_algn_w = 2.0 * per_sec
         self.yaw_algn_kp = 9.6
-        self.yaw_algn_thresh = 0.02
+        self.yaw_algn_thresh = 0.05
         self.yaw_aligned = False
 
         # Pitch align
-        self.pitch_algn_w = 0.5
+        self.pitch_algn_w = 2.0 * per_sec
         self.pitch_algn_kp = 1.9
-        self.pitch_algn_thresh = 0.02
+        self.pitch_algn_thresh = 0.05
         self.pitch_aligned = False
 
         # Force/torque
         self.ft_contact_wrist = np.zeros(6)
         self.ft_ema = np.zeros(6)
-        self.alpha_ft_ema = 0.03
+        self.alpha_ft_ema = 0.05
         self.ft_feeling_sum = np.zeros((1, 6))
         self.ft_feeling = np.zeros(6)
 
@@ -67,6 +73,10 @@ class FSM:
             "ty": 0.1,  # threshold for torque in y direction
             "tz": 0.1,  # threshold for torque in z direction
         }
+        
+        self.thread_times = []
+        self.prev_thread_time = time.perf_counter()
+        self.thread_cntr = 0
 
     # -----------------------------------------------------------------------------------------------------------
     def next_state(self) -> None:
@@ -100,7 +110,7 @@ class FSM:
     # -----------------------------------------------------------------------------------------------------------
     def state_test(self) -> None:
         self.controller.mode = "velocity"
-        self.test_pitch()
+        # self.test_pitch()
 
     # -----------------------------------------------------------------------------------------------------------
     def state_initial_pos(self) -> None:
@@ -130,11 +140,29 @@ class FSM:
 
     # -----------------------------------------------------------------------------------------------------------
     def state_interact_perceive(self) -> None:
+        timediff = []
+        timenames = []
+        if self.do_timers:
+            time1 = time.perf_counter()
+            fsm_start = time1
+        
         # Calculate exponential moving average to smooth out noise from ft readings
         self.update_ft_ema()
+        
+        if self.do_timers:
+            time2 = time.perf_counter()
+            timediff.append(time2 - time1)
+            timenames.append("update_ft_ema")
+            time1 = time2
 
         # Move in the z direction to maintain light contact with object
         twist_contact = self.do_keep_contact()
+        
+        if self.do_timers:
+            time2 = time.perf_counter()
+            timediff.append(time2 - time1)
+            timenames.append("keep_contact")
+            time1 = time2
 
         # Wiggle wrist to get the feeling force
         twist_wiggle = [0, 0, 0, 0, 0, 0]
@@ -150,6 +178,12 @@ class FSM:
             self.ft_feeling_sum = np.append(
                 self.ft_feeling_sum, self.ft_ema.reshape(1, 6), axis=0
             )
+        
+        if self.do_timers:
+            time2 = time.perf_counter()
+            timediff.append(time2 - time1)
+            timenames.append("wiggle")
+            time1 = time2
 
         self.ft_feeling = self.ft_feeling_sum.mean(axis=0)
         self.controller.ft_feeling = self.ft_feeling.tolist()
@@ -159,6 +193,12 @@ class FSM:
         if self.align_axes:
             twist_yaw = self.do_align_yaw()
             twist_pitch = self.do_align_pitch()
+        
+        if self.do_timers:
+            time2 = time.perf_counter()
+            timediff.append(time2 - time1)
+            timenames.append("axes")
+            time1 = time2
 
         # Sum up all the speed components
         speed_total = [
@@ -171,6 +211,26 @@ class FSM:
         self.controller.do_move_velocity(
             v_des=speed_total[:3], w_des=speed_total[3:], link="wrist", wf=False
         )
+        
+        if self.do_timers:
+            time2 = time.perf_counter()
+            timediff.append(time2 - time1)
+            timenames.append("speed_apply")
+            time1 = time2
+        
+            self.thread_cntr += 1
+            current_time = time.perf_counter()
+            elapsed_time = current_time - fsm_start
+            timediff.append(elapsed_time)
+            timenames.append("fsm_elapsed_time")
+            
+            self.thread_times.append(timediff)
+            
+            if len(self.thread_times) > self.thread_cntr_max:
+                self.thread_cntr = 0
+                avgs = [ sum(i) / len(i) for i in zip(*self.thread_times) ]
+                print("Average fsm times:", [f"{name}: {v:.6f}s" for name, v in zip(timenames, avgs)])
+                self.thread_times = []
 
     # -----------------------------------------------------------------------------------------------------------
     def update_ft_ema(self) -> None:
@@ -183,6 +243,7 @@ class FSM:
         if self.ft_contact_wrist[fz] < self.thresh["fz"]:
             self.is_touching = True
             if not self.touched_once:
+                # self.forward_kp = 0.26
                 self.ft_ema = np.array(self.ft_contact_wrist)
                 self.touched_once = True
                 self.ft_feeling_sum = self.ft_ema.reshape((1, 6))
@@ -246,7 +307,7 @@ class FSM:
 
         v = -np.cross(w, r)
 
-        print(f"DEBUG yaw align ff: {self.ft_feeling[fy]}, v: {v}, w: {w}, right_finger: {right_finger}")
+        # print(f"DEBUG yaw align ff: {self.ft_feeling[fy]}, v: {v}, w: {w}, right_finger: {right_finger}")
         return v.tolist() + w.tolist()
 
     # -----------------------------------------------------------------------------------------------------------
@@ -267,7 +328,7 @@ class FSM:
         r = (right + left) / 2
         v = -np.cross(w, r)
 
-        print(f"DEBUG pitch align ff: {self.ft_feeling[fx]}, v: {v}, w: {w}, r: {r}, aligned: {self.pitch_aligned}")
+        # print(f"DEBUG pitch align ff: {self.ft_feeling[fx]}, v: {v}, w: {w}, r: {r}, aligned: {self.pitch_aligned}")
         return v.tolist() + w.tolist()
 
 

@@ -1,11 +1,15 @@
 import threading, json, os, csv, time, math, sys
-from typing import Tuple, List
+from typing import Tuple, List, Literal
 from collections import defaultdict
 import pybullet as p
 import numpy as np
 from simulation import Simulation
 from fsm import FSM
-from cvxopt import matrix, solvers
+from data_writer import DataWriter
+# from cvxopt import matrix, solvers
+import scipy.sparse as sp
+import osqp
+import queue
 
 
 # -----------------------------------------------------------------------------------------------------------
@@ -15,16 +19,23 @@ class Controller(threading.Thread):
         sim: Simulation,
         shutdown_event: threading.Event,
         draw_debug: bool = False,
+        do_timers: bool = False,
         **kwargs,
     ) -> None:
 
         super().__init__(**kwargs)
         self.daemon = True
-        self.interval = 0.001
+        
         self.sim = sim
         self.robot = sim.robot
         self.sim_lock = sim.sim_lock
         self.shutdown_event = shutdown_event
+        self.draw_debug = draw_debug
+        self.do_timers = do_timers
+        # self.debug_lines = []
+        # self.prev_debug_lines = []
+        self.interval = 0.01 # 10 ms
+        self.thread_cntr_max = 50
         self.initial_x = 0.7
         self.initial_y = 0.0
         self.initial_z = 0.12
@@ -51,9 +62,6 @@ class Controller(threading.Thread):
         self.left_idx = None
         self.parent_map = defaultdict(list)
         self.get_idxs()
-        self.draw_debug = draw_debug
-        self.debug_lines = []
-        self.prev_debug_lines = []
 
         self.num_revolute_joints = len(self.revolute_joint_idx)
         self.num_movable_joints = len(self.movable_joint_idxs)
@@ -62,7 +70,7 @@ class Controller(threading.Thread):
         # self.ft_types = ["raw", "comp", "contact"]
         self.ft_types = ["contact_ft", "ema_ft", "feeling_ft"]
         self.ft_keys = [f"{name}_{type}" for type in self.ft_types for name in self.ft_names]
-        self.ft = {ft_name: 0 for ft_name in self.ft_keys}
+        self.ft = {ft_name: 0.0 for ft_name in self.ft_keys}
         self.ft_contact_wrist = [0.0] * 6
         self.ft_ema = [0.0] * 6
         self.ft_feeling = [0.0] * 6
@@ -100,6 +108,9 @@ class Controller(threading.Thread):
         self.joint_speed = {name: 0.0 for name in self.speed_keys}
 
         self.initialize_plot_files()
+        self.data_queue = queue.Queue()
+        csv_keys = self.ft_keys + self.speed_keys
+        self.data_writer = DataWriter(self.data_queue, self.shutdown_event, self.ft_file, self.pos_file, csv_keys)
 
     # -----------------------------------------------------------------------------------------------------------
     def get_idxs(self) -> None:
@@ -162,14 +173,8 @@ class Controller(threading.Thread):
             self.ft[f"{name}_feeling_ft"] = self.ft_feeling[i]
 
         combined = self.ft | self.speed
-
-        if os.path.isfile(self.ft_file):
-            with open(self.ft_file, "a", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=combined.keys())
-                writer.writerow(combined)
-        else:
-            print(f"Could not find file {self.ft_file}, exiting")
-            sys.exit(0)
+        
+        self.data_queue.put({"type": "csv", "data": combined})
 
     # -----------------------------------------------------------------------------------------------------------
     """ Write current world frame positions of end effector to pos_file """
@@ -186,17 +191,12 @@ class Controller(threading.Thread):
             "x": ee_position_wf[0],
             "y": ee_position_wf[1],
             "z": ee_position_wf[2],
-            "roll": ee_orientation_wf[0] * 180 / math.pi,
-            "pitch": ee_orientation_wf[1] * 180 / math.pi,
-            "yaw": ee_orientation_wf[2] * 180 / math.pi,
+            "roll": ee_orientation_wf[0] * 180.0 / math.pi,
+            "pitch": ee_orientation_wf[1] * 180.0 / math.pi,
+            "yaw": ee_orientation_wf[2] * 180.0 / math.pi,
         }
 
-        try:
-            with open(self.pos_file, "w") as f:
-                json.dump(pos, f)
-        except:
-            print(f"Could not find file {self.pos_file}, exiting")
-            sys.exit(0)
+        self.data_queue.put({"type": "json", "data": pos})
 
     # -----------------------------------------------------------------------------------------------------------
     def get_contact_ft(self) -> None:
@@ -221,6 +221,7 @@ class Controller(threading.Thread):
             self.ft_contact_wrist = [0.0] * 6
             return
 
+        contact_pos = np.zeros(3)
         for pt in contact_pts:
             cntr += 1
             link = pt[3]
@@ -251,23 +252,23 @@ class Controller(threading.Thread):
 
         # Draw debug line
         if self.draw_debug:
-            with self.sim_lock:
-                # debug direction
-                start_pos = contact_pos
+            # debug direction
+            start_pos = contact_pos
 
-                for i in range(3):
-                    # force_world = np.zeros(3)
-                    # force_world[i] = total_force_world[i]
-                    # end_pos_force = start_pos + force_world
+            for i in range(3):
+                # force_world = np.zeros(3)
+                # force_world[i] = total_force_world[i]
+                # end_pos_force = start_pos + force_world
 
-                    force_local = np.zeros(3)
-                    force_local[i] = total_force_local[i]
-                    force_world = rot_wrist_world @ force_local
-                    end_pos_force = start_pos + force_world
+                force_local = np.zeros(3)
+                force_local[i] = total_force_local[i]
+                force_world = rot_wrist_world @ force_local
+                end_pos_force = start_pos + force_world
 
-                    linecolor = [0.0, 0.0, 0.0]
-                    linecolor[i] = 0.75
+                linecolor = [0.0, 0.0, 0.0]
+                linecolor[i] = 0.75
 
+                with self.sim_lock:
                     line = p.addUserDebugLine(
                         start_pos,
                         end_pos_force,
@@ -275,14 +276,20 @@ class Controller(threading.Thread):
                         lineWidth=5,
                         lifeTime=0,
                     )
-                    self.debug_lines.append(line)
+                # self.debug_lines.append(line)
 
-                    torque_world = np.zeros(3)
-                    torque_world[i] = total_torque_world[i]
-                    end_pos_torque = start_pos + torque_world
+                # torque_world = np.zeros(3)
+                # torque_world[i] = total_torque_world[i]
+                # end_pos_torque = start_pos + torque_world
 
-                    linecolor[i] = 0.25
+                torque_local = np.zeros(3)
+                torque_local[i] = total_torque_local[i]
+                torque_world = rot_wrist_world @ torque_local
+                end_pos_torque = start_pos + torque_world
 
+                linecolor[i] = 0.25
+
+                with self.sim_lock:
                     line = p.addUserDebugLine(
                         start_pos,
                         end_pos_torque,
@@ -290,37 +297,7 @@ class Controller(threading.Thread):
                         lineWidth=8,
                         lifeTime=0,
                     )
-                    self.debug_lines.append(line)
-
-                # # debug direction
-                # start_pos = wrist_pos
-
-                # for i in range(3):
-                #     force_world = np.zeros(3)
-                #     force_world[i] = total_force_local[i]
-                #     force_world = rot_wrist_world @ force_world
-                #     end_pos_force = start_pos + force_world
-
-                #     line = p.addUserDebugLine(start_pos,
-                #                     end_pos_force,
-                #                     lineColorRGB=[0, 0.5, 1],
-                #                     lineWidth=7,
-                #                     lifeTime=0
-                #     )
-                #     self.debug_lines.append(line)
-
-                #     torque_world = np.zeros(3)
-                #     torque_world[i] = total_torque_local[i]
-                #     torque_world = rot_wrist_world @ torque_world
-                #     end_pos_torque = start_pos + torque_world
-
-                #     line = p.addUserDebugLine(start_pos,
-                #                     end_pos_torque,
-                #                     lineColorRGB=[0, 1, 0.5],
-                #                     lineWidth=7,
-                #                     lifeTime=0
-                #     )
-                #     self.debug_lines.append(line)
+                # self.debug_lines.append(line)
 
     # -----------------------------------------------------------------------------------------------------------
     def stop_movement(self) -> None:
@@ -391,13 +368,12 @@ class Controller(threading.Thread):
             )
 
     # -----------------------------------------------------------------------------------------------------------
-    def check_gripper_pos(self) -> None:
+    def check_gripper_pos(self) -> Literal[True, False]:
         with self.sim_lock:
             gripper_pos = [
                 p.getJointState(self.robot, joint_idx)[0]
                 for joint_idx in self.finger_joints
             ]
-            print(f"Gripper positions: {gripper_pos}")
             if all(pos >= 0.039 for pos in gripper_pos):
                 return True
             else:
@@ -516,42 +492,45 @@ class Controller(threading.Thread):
         else:  # link == 'ee':
             link = self.ee_link_index
 
+        # wf = world frame
         with self.sim_lock:
-            # wf = world frame
             ee_pos_wf, ee_orn_wf = p.getLinkState(self.robot, self.ee_link_index, computeForwardKinematics=True)[:2]
 
-            # direction is just + or - 1
-            # convert speed to world frame
-            self.speed_wrist = [0.0] * 6
-            if wf:
-                v_wf = np.array(v_des)
-                w_wf = np.array(w_des)
-            else:
-                self.speed_wrist[0:3] = v_des
-                self.speed_wrist[3:6] = w_des
+        # direction is just + or - 1
+        # convert speed to world frame
+        self.speed_wrist = [0.0] * 6
+        if wf:
+            v_wf = np.array(v_des)
+            w_wf = np.array(w_des)
+        else:
+            self.speed_wrist[0:3] = v_des
+            self.speed_wrist[3:6] = w_des
+            with self.sim_lock:
                 R_wrist2world = np.array(p.getMatrixFromQuaternion(ee_orn_wf)).reshape(3, 3)
-                v_wf = R_wrist2world.dot(np.array(v_des))
-                w_wf = R_wrist2world.dot(np.array(w_des))
+            v_wf = R_wrist2world.dot(np.array(v_des))
+            w_wf = R_wrist2world.dot(np.array(w_des))
 
-            # debug direction
+        # debug direction
+        with self.sim_lock:
             if self.draw_debug:
                 start_pos = np.array(ee_pos_wf)
                 end_pos = start_pos + v_wf * 0.5
                 line = p.addUserDebugLine(
                     start_pos, end_pos, lineColorRGB=[1, 0, 0], lineWidth=3, lifeTime=0
                 )
-                self.debug_lines.append(line)
+                # self.debug_lines.append(line)
 
                 end_pos = start_pos + w_wf * 0.5
                 line = p.addUserDebugLine(
                     start_pos, end_pos, lineColorRGB=[0, 1, 0], lineWidth=3, lifeTime=0
                 )
-                self.debug_lines.append(line)
+                # self.debug_lines.append(line)
 
-            speed_wf = np.hstack((v_wf, w_wf))
-            self.speed_wf = speed_wf
-            # print(f"speed_wf: {self.speed_wf}")
+        speed_wf = np.hstack((v_wf, w_wf))
+        self.speed_wf = speed_wf
+        # print(f"speed_wf: {self.speed_wf}")
 
+        with self.sim_lock:
             joint_states = p.getJointStates(self.robot, self.movable_joint_idxs)
             q = [joint_state[0] for joint_state in joint_states]
             qd = [joint_state[1] for joint_state in joint_states]
@@ -569,46 +548,56 @@ class Controller(threading.Thread):
                 objAccelerations=qdd,
             )
 
-            J = np.vstack((np.array(J_lin), np.array(J_ang)))
-            n = J.shape[1]
+        J = np.vstack((np.array(J_lin), np.array(J_ang)))
+        n = J.shape[1]
 
-            alpha = 1e-2
-            dt = 1.0 / 240.0
-            y = 1e-2
-            q = np.array(q)
-            q_min = np.array(self.joint_lower_limits)
-            q_max = np.array(self.joint_upper_limits)
-            limits = np.array(self.max_joint_velocities)
-            W = np.diag((1.0 / limits) ** 2)
+        alpha = 1e-2
+        dt = 1.0 / 240.0
+        y = 1e-2
+        q = np.array(q)
+        q_min = np.array(self.joint_lower_limits)
+        q_max = np.array(self.joint_upper_limits)
+        limits = np.array(self.max_joint_velocities)
+        W = np.diag((1.0 / limits) ** 2)
 
-            # Quadratic cost: ½ dqᵀ H dq + gᵀ dq
-            # H = J.T.dot(J) + alpha * np.eye(n)
-            H = J.T.dot(J) + y * W
-            g = -J.T.dot(speed_wf)
+        # Quadratic cost: ½ dqᵀ H dq + gᵀ dq
+        # H = J.T.dot(J) + alpha * np.eye(n)
+        H = J.T.dot(J) + y * W
+        g = -J.T.dot(speed_wf)
 
-            # Joint velocity bounds from position limits:
-            #  q + dq·dt ≥ q_min  ⇒ dq ≥ (q_min - q)/dt
-            #  q + dq·dt ≤ q_max  ⇒ dq ≤ (q_max - q)/dt
-            lb = (q_min - q) / dt
-            ub = (q_max - q) / dt
+        # Joint velocity bounds from position limits:
+        #  q + dq·dt ≥ q_min  ⇒ dq ≥ (q_min - q)/dt
+        #  q + dq·dt ≤ q_max  ⇒ dq ≤ (q_max - q)/dt
+        lb = (q_min - q) / dt
+        ub = (q_max - q) / dt
 
-            # Inequality G dq ≤ h encapsulating both bounds:
-            #  dq ≤ ub   →  I dq ≤ ub
-            #  -dq ≤ -lb → -I dq ≤ -lb
-            G = np.vstack((np.eye(n), -np.eye(n)))
-            h = np.hstack((ub, -lb))
+        # Inequality G dq ≤ h encapsulating both bounds:
+        #  dq ≤ ub   →  I dq ≤ ub
+        #  -dq ≤ -lb → -I dq ≤ -lb
+        G = np.vstack((np.eye(n), -np.eye(n)))
+        h = np.hstack((ub, -lb))
 
-            # Convert to cvxopt matrices
-            P = matrix(H)
-            q_cvx = matrix(g)
-            G_cvx = matrix(G)
-            h_cvx = matrix(h)
+        # Convert to cvxopt matrices
+        # P = matrix(H)
+        # q_cvx = matrix(g)
+        # G_cvx = matrix(G)
+        # h_cvx = matrix(h)
 
-            # Solve QP
-            sol = solvers.qp(P, q_cvx, G_cvx, h_cvx, options={"show_progress": False})
-            dq = np.array(sol["x"]).flatten()
+        # Solve QP
+        # Use OSQP for faster QP solving if available, else fallback to cvxopt
+        # Convert numpy arrays to sparse matrices for OSQP
+        P_osqp = sp.csc_matrix((H + H.T) / 2)  # Ensure symmetry
+        q_osqp = g
+        G_osqp = sp.csc_matrix(G)
+        l_osqp = -np.inf * np.ones(h.shape)
+        u_osqp = h
 
-            self.next_vel = dq
+        prob = osqp.OSQP()
+        prob.setup(P=P_osqp, q=q_osqp, A=G_osqp, l=l_osqp, u=u_osqp, verbose=False)
+        res = prob.solve()
+        dq = res.x
+
+        self.next_vel = dq
 
             # limits = np.array(self.max_joint_velocities)
             # # Weighted pseudoinverse, bias movement towards joints with more freedom
@@ -646,24 +635,47 @@ class Controller(threading.Thread):
 
     # -----------------------------------------------------------------------------------------------------------
     def run(self) -> None:
+        next_thread_time = time.perf_counter()
+        prev_sleep_time = next_thread_time
+        interval = self.interval
+        thread_cntr = 0
+        thread_times = []
+        
         while not self.shutdown_event.is_set():
             with self.sim_lock:
+                p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 0)
+            timediff = []
+            timenames = []
+            thread_start_time = time.perf_counter()
+                
+            with self.sim_lock: 
                 qKey = ord("q")
                 keys = p.getKeyboardEvents()
                 if qKey in keys and keys[qKey] & p.KEY_WAS_TRIGGERED:
                     self.pause_sim = not self.pause_sim
+                    if self.pause_sim:
+                        p.setRealTimeSimulation(0)
+                    else:
+                        p.setRealTimeSimulation(1)
                     print(f"Got input to {'pause' if self.pause_sim else 'unpause'} simulation")
+            
+            if self.do_timers:
+                timediff.append(time.perf_counter() - thread_start_time)
+                timenames.append("input_check")
 
             if self.pause_sim == False:
-
+                with self.sim_lock:
+                    p.removeAllUserDebugItems()
+                    
                 self.get_contact_ft()
-                for i in self.prev_debug_lines:
-                    p.removeUserDebugItem(i)
-
-                self.prev_debug_lines = self.debug_lines
-                self.debug_lines = []
+                if self.do_timers:
+                    timediff.append(time.perf_counter() - timediff[-1] - thread_start_time)
+                    timenames.append("get_contact_ft")
 
                 self.fsm.next_state()
+                if self.do_timers:
+                    timediff.append(time.perf_counter() - timediff[-1] - thread_start_time)
+                    timenames.append("fsm_next_state")
 
                 match self.mode:
                     case "position":
@@ -677,14 +689,48 @@ class Controller(threading.Thread):
                         # self.stop_movement()
                         pass
 
+                if self.do_timers:
+                    timediff.append(time.perf_counter() - timediff[-1] - thread_start_time)
+                    timenames.append("apply_speed")
+                
                 self.write_wf_position()
                 self.write_data_files()
-                p.stepSimulation()
+                
+                if self.do_timers:
+                    timediff.append(time.perf_counter() - timediff[-1] - thread_start_time)
+                    timenames.append("write_data_files")
+            
             else:
-                continue
-            #     self.stop_movement()
-
-            time.sleep(1.0 / 240.0)
+                pass
+            
+            with self.sim_lock:
+                p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 1)
+            
+            current_time = time.perf_counter()
+            elapsed_time = current_time - thread_start_time
+            if elapsed_time > interval:
+                print(f"Controller thread is running slow! Thread time: {elapsed_time:.6f}s") 
+            if self.do_timers:
+                thread_cntr += 1
+                timediff.append(elapsed_time)
+                timenames.append("thread_elapsed_time")
+                thread_times.append(timediff)
+            
+                if len(thread_times) > self.thread_cntr_max:
+                    thread_cntr = 0
+                    avgs = [ sum(i) / len(i) for i in zip(*thread_times) ]
+                    print("Average thread times:", [f"{name}: {v:.6f}s" for name, v in zip(timenames, avgs)])
+                    thread_times = []
+            
+            next_thread_time += interval
+            sleep_time = next_thread_time - time.perf_counter()
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            else:
+                print(f"Controller thread is running behind schedule by {-sleep_time:.6f}s")
+                if len(thread_times) > 0:
+                    print(f"Thread times: ", [f"{name}: {t:.6f}s" for name, t in zip(timenames, thread_times[-1])])
+                next_thread_time = time.perf_counter()
 
         print("Exiting controller thread...")
         sys.exit(0)
