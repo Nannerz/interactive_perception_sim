@@ -98,7 +98,7 @@ class App:
         self.sim_lock = sim.sim_lock
 
         controller_thread = Controller(
-            sim=sim, shutdown_event=self.shutdown_event, draw_debug=True, do_timers=False
+            sim=sim, shutdown_event=self.shutdown_event, draw_debug=True, do_timers=True
         )
         controller_thread.start()
         threads.append(controller_thread)

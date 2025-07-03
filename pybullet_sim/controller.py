@@ -32,10 +32,10 @@ class Controller(threading.Thread):
         self.shutdown_event = shutdown_event
         self.draw_debug = draw_debug
         self.do_timers = do_timers
-        # self.debug_lines = []
+        self.debug_lines = {}
         # self.prev_debug_lines = []
         self.interval = 0.01 # 10 ms
-        self.thread_cntr_max = 50
+        self.thread_cntr_max = 500
         self.initial_x = 0.7
         self.initial_y = 0.0
         self.initial_z = 0.12
@@ -268,15 +268,8 @@ class Controller(threading.Thread):
                 linecolor = [0.0, 0.0, 0.0]
                 linecolor[i] = 0.75
 
-                with self.sim_lock:
-                    line = p.addUserDebugLine(
-                        start_pos,
-                        end_pos_force,
-                        lineColorRGB=linecolor,
-                        lineWidth=5,
-                        lifeTime=0,
-                    )
-                # self.debug_lines.append(line)
+                kwargs = {"lineColorRGB": linecolor, "lineWidth": 5, "lifeTime": 0}
+                self.update_debug_line("force_wrist", start_pos, end_pos_force, kwargs)
 
                 # torque_world = np.zeros(3)
                 # torque_world[i] = total_torque_world[i]
@@ -289,15 +282,8 @@ class Controller(threading.Thread):
 
                 linecolor[i] = 0.25
 
-                with self.sim_lock:
-                    line = p.addUserDebugLine(
-                        start_pos,
-                        end_pos_torque,
-                        lineColorRGB=linecolor,
-                        lineWidth=8,
-                        lifeTime=0,
-                    )
-                # self.debug_lines.append(line)
+                kwargs = {"lineColorRGB": linecolor, "lineWidth": 8, "lifeTime": 0}
+                self.update_debug_line("torque_wrist", start_pos, end_pos_force, kwargs)
 
     # -----------------------------------------------------------------------------------------------------------
     def stop_movement(self) -> None:
@@ -511,20 +497,16 @@ class Controller(threading.Thread):
             w_wf = R_wrist2world.dot(np.array(w_des))
 
         # debug direction
-        with self.sim_lock:
-            if self.draw_debug:
-                start_pos = np.array(ee_pos_wf)
-                end_pos = start_pos + v_wf * 0.5
-                line = p.addUserDebugLine(
-                    start_pos, end_pos, lineColorRGB=[1, 0, 0], lineWidth=3, lifeTime=0
-                )
-                # self.debug_lines.append(line)
+        if self.draw_debug:
+            start_pos = np.array(ee_pos_wf)
+            end_pos = start_pos + v_wf * 0.5
+            
+            kwargs = {"lineColorRGB": [0, 0, 1], "lineWidth": 3, "lifeTime": 0}
+            self.update_debug_line("v_wf", start_pos, end_pos, kwargs)
 
-                end_pos = start_pos + w_wf * 0.5
-                line = p.addUserDebugLine(
-                    start_pos, end_pos, lineColorRGB=[0, 1, 0], lineWidth=3, lifeTime=0
-                )
-                # self.debug_lines.append(line)
+            end_pos = start_pos + w_wf * 0.5
+            kwargs = {"lineColorRGB": [1, 0, 0], "lineWidth": 3, "lifeTime": 0}
+            self.update_debug_line("w_wf", start_pos, end_pos, kwargs)
 
         speed_wf = np.hstack((v_wf, w_wf))
         self.speed_wf = speed_wf
@@ -634,6 +616,17 @@ class Controller(threading.Thread):
             # self.next_vel = dq
 
     # -----------------------------------------------------------------------------------------------------------
+    def update_debug_line(self, line_name: str, start_pos: List[float], end_pos: List[float], kwargs: dict) -> None:
+        if line_name in self.debug_lines:
+            kwargs["replaceItemUniqueId"] = self.debug_lines[line_name]
+        
+        with self.sim_lock:
+            line = p.addUserDebugLine(start_pos, end_pos, **kwargs)
+        
+        if line_name not in self.debug_lines:
+            self.debug_lines[line_name] = line
+
+    # -----------------------------------------------------------------------------------------------------------
     def run(self) -> None:
         next_thread_time = time.perf_counter()
         prev_sleep_time = next_thread_time
@@ -642,11 +635,19 @@ class Controller(threading.Thread):
         thread_times = []
         
         while not self.shutdown_event.is_set():
-            with self.sim_lock:
-                p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 0)
+            thread_start_time = time.perf_counter()
+            prev_time = thread_start_time
+            
+            # with self.sim_lock:
+                # p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 0)
             timediff = []
             timenames = []
-            thread_start_time = time.perf_counter()
+            
+            if self.do_timers:
+                cur_time = time.perf_counter()
+                timediff.append(cur_time - prev_time)
+                prev_time = cur_time
+                timenames.append("vis_off")
                 
             with self.sim_lock: 
                 qKey = ord("q")
@@ -660,21 +661,27 @@ class Controller(threading.Thread):
                     print(f"Got input to {'pause' if self.pause_sim else 'unpause'} simulation")
             
             if self.do_timers:
-                timediff.append(time.perf_counter() - thread_start_time)
+                cur_time = time.perf_counter()
+                timediff.append(cur_time - prev_time)
+                prev_time = cur_time
                 timenames.append("input_check")
 
             if self.pause_sim == False:
-                with self.sim_lock:
-                    p.removeAllUserDebugItems()
+                # with self.sim_lock:
+                    # p.removeAllUserDebugItems()
                     
                 self.get_contact_ft()
                 if self.do_timers:
-                    timediff.append(time.perf_counter() - timediff[-1] - thread_start_time)
+                    cur_time = time.perf_counter()
+                    timediff.append(cur_time - prev_time)
+                    prev_time = cur_time
                     timenames.append("get_contact_ft")
 
-                self.fsm.next_state()
+                fsm_times = self.fsm.next_state()
                 if self.do_timers:
-                    timediff.append(time.perf_counter() - timediff[-1] - thread_start_time)
+                    cur_time = time.perf_counter()
+                    timediff.append(cur_time - prev_time)
+                    prev_time = cur_time
                     timenames.append("fsm_next_state")
 
                 match self.mode:
@@ -690,21 +697,25 @@ class Controller(threading.Thread):
                         pass
 
                 if self.do_timers:
-                    timediff.append(time.perf_counter() - timediff[-1] - thread_start_time)
+                    cur_time = time.perf_counter()
+                    timediff.append(cur_time - prev_time)
+                    prev_time = cur_time
                     timenames.append("apply_speed")
                 
                 self.write_wf_position()
                 self.write_data_files()
                 
                 if self.do_timers:
-                    timediff.append(time.perf_counter() - timediff[-1] - thread_start_time)
+                    cur_time = time.perf_counter()
+                    timediff.append(cur_time - prev_time)
+                    prev_time = cur_time
                     timenames.append("write_data_files")
             
             else:
                 pass
             
-            with self.sim_lock:
-                p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 1)
+            # with self.sim_lock:
+                # p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 1)
             
             current_time = time.perf_counter()
             elapsed_time = current_time - thread_start_time
