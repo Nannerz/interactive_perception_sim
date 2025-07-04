@@ -79,8 +79,10 @@ class FSM:
         self.thread_cntr = 0
 
     # -----------------------------------------------------------------------------------------------------------
-    def next_state(self) -> None:
+    def next_state(self):
         self.controller.get_fingertip_pos()
+        
+        ret = None
 
         match self.state:
             case "start":
@@ -102,10 +104,12 @@ class FSM:
                 # self.test_wiggle()
 
             case "interact_perceive":
-                self.state_interact_perceive()
+                ret = self.state_interact_perceive()
 
             case _:
                 pass
+
+        return ret
 
     # -----------------------------------------------------------------------------------------------------------
     def state_test(self) -> None:
@@ -139,7 +143,7 @@ class FSM:
             self.controller.open_gripper()
 
     # -----------------------------------------------------------------------------------------------------------
-    def state_interact_perceive(self) -> None:
+    def state_interact_perceive(self):
         timediff = []
         timenames = []
         if self.do_timers:
@@ -212,6 +216,8 @@ class FSM:
             v_des=speed_total[:3], w_des=speed_total[3:], link="wrist", wf=False
         )
         
+        ret = zip(timediff, timenames)
+        
         if self.do_timers:
             time2 = time.perf_counter()
             timediff.append(time2 - time1)
@@ -225,12 +231,15 @@ class FSM:
             timenames.append("fsm_elapsed_time")
             
             self.thread_times.append(timediff)
+            ret = zip(timediff, timenames)
             
             if len(self.thread_times) > self.thread_cntr_max:
                 self.thread_cntr = 0
                 avgs = [ sum(i) / len(i) for i in zip(*self.thread_times) ]
                 print("Average fsm times:", [f"{name}: {v:.6f}s" for name, v in zip(timenames, avgs)])
                 self.thread_times = []
+                
+        return ret
 
     # -----------------------------------------------------------------------------------------------------------
     def update_ft_ema(self) -> None:

@@ -472,7 +472,10 @@ class Controller(threading.Thread):
     #     self.do_move_velocity(v_des=v_des_local.tolist(), w_des=w_des_local.tolist(), link='wrist', wf=False)
     # -----------------------------------------------------------------------------------------------------------
     def do_move_velocity(self, v_des, w_des, link="wrist", wf=False) -> None:
-
+        
+        speed_timers = {}
+        time1 = time.perf_counter()
+        start_time = time1
         if link == "wrist":
             link = self.wrist_idx
         else:  # link == 'ee':
@@ -481,6 +484,10 @@ class Controller(threading.Thread):
         # wf = world frame
         with self.sim_lock:
             ee_pos_wf, ee_orn_wf = p.getLinkState(self.robot, self.ee_link_index, computeForwardKinematics=True)[:2]
+            
+        time2 = time.perf_counter()
+        speed_timers["getstate"] = time2 - time1
+        time1 = time2
 
         # direction is just + or - 1
         # convert speed to world frame
@@ -496,6 +503,10 @@ class Controller(threading.Thread):
             v_wf = R_wrist2world.dot(np.array(v_des))
             w_wf = R_wrist2world.dot(np.array(w_des))
 
+        time2 = time.perf_counter()
+        speed_timers["rotate"] = time2 - time1
+        time1 = time2
+
         # debug direction
         if self.draw_debug:
             start_pos = np.array(ee_pos_wf)
@@ -507,6 +518,9 @@ class Controller(threading.Thread):
             end_pos = start_pos + w_wf * 0.5
             kwargs = {"lineColorRGB": [1, 0, 0], "lineWidth": 3, "lifeTime": 0}
             self.update_debug_line("w_wf", start_pos, end_pos, kwargs)
+            time2 = time.perf_counter()
+            speed_timers["draw_debug"] = time2 - time1
+            time1 = time2
 
         speed_wf = np.hstack((v_wf, w_wf))
         self.speed_wf = speed_wf
@@ -529,91 +543,134 @@ class Controller(threading.Thread):
                 objVelocities=qd,
                 objAccelerations=qdd,
             )
+            
+        time2 = time.perf_counter()
+        speed_timers["calc_jacob"] = time2 - time1
+        time1 = time2
 
         J = np.vstack((np.array(J_lin), np.array(J_ang)))
         n = J.shape[1]
 
-        alpha = 1e-2
-        dt = 1.0 / 240.0
-        y = 1e-2
-        q = np.array(q)
-        q_min = np.array(self.joint_lower_limits)
-        q_max = np.array(self.joint_upper_limits)
-        limits = np.array(self.max_joint_velocities)
-        W = np.diag((1.0 / limits) ** 2)
+        # solve_mode = 'osqp'
+        solve_mode = 'matrix'
+        if 'osqp' in solve_mode:
 
-        # Quadratic cost: ½ dqᵀ H dq + gᵀ dq
-        # H = J.T.dot(J) + alpha * np.eye(n)
-        H = J.T.dot(J) + y * W
-        g = -J.T.dot(speed_wf)
+            alpha = 1e-2
+            dt = 1.0 / 240.0
+            y = 1e-2
+            q = np.array(q)
+            q_min = np.array(self.joint_lower_limits)
+            q_max = np.array(self.joint_upper_limits)
+            limits = np.array(self.max_joint_velocities)
+            W = np.diag((1.0 / limits) ** 2)
 
-        # Joint velocity bounds from position limits:
-        #  q + dq·dt ≥ q_min  ⇒ dq ≥ (q_min - q)/dt
-        #  q + dq·dt ≤ q_max  ⇒ dq ≤ (q_max - q)/dt
-        lb = (q_min - q) / dt
-        ub = (q_max - q) / dt
+            # Quadratic cost: ½ dqᵀ H dq + gᵀ dq
+            # H = J.T.dot(J) + alpha * np.eye(n)
+            H = J.T.dot(J) + y * W
+            g = -J.T.dot(speed_wf)
 
-        # Inequality G dq ≤ h encapsulating both bounds:
-        #  dq ≤ ub   →  I dq ≤ ub
-        #  -dq ≤ -lb → -I dq ≤ -lb
-        G = np.vstack((np.eye(n), -np.eye(n)))
-        h = np.hstack((ub, -lb))
+            # Joint velocity bounds from position limits:
+            #  q + dq·dt ≥ q_min  ⇒ dq ≥ (q_min - q)/dt
+            #  q + dq·dt ≤ q_max  ⇒ dq ≤ (q_max - q)/dt
+            lb = (q_min - q) / dt
+            ub = (q_max - q) / dt
 
-        # Convert to cvxopt matrices
-        # P = matrix(H)
-        # q_cvx = matrix(g)
-        # G_cvx = matrix(G)
-        # h_cvx = matrix(h)
+            # Inequality G dq ≤ h encapsulating both bounds:
+            #  dq ≤ ub   →  I dq ≤ ub
+            #  -dq ≤ -lb → -I dq ≤ -lb
+            G = np.vstack((np.eye(n), -np.eye(n)))
+            h = np.hstack((ub, -lb))
 
-        # Solve QP
-        # Use OSQP for faster QP solving if available, else fallback to cvxopt
-        # Convert numpy arrays to sparse matrices for OSQP
-        P_osqp = sp.csc_matrix((H + H.T) / 2)  # Ensure symmetry
-        q_osqp = g
-        G_osqp = sp.csc_matrix(G)
-        l_osqp = -np.inf * np.ones(h.shape)
-        u_osqp = h
+            # Convert to cvxopt matrices
+            # P = matrix(H)
+            # q_cvx = matrix(g)
+            # G_cvx = matrix(G)
+            # h_cvx = matrix(h)
 
-        prob = osqp.OSQP()
-        prob.setup(P=P_osqp, q=q_osqp, A=G_osqp, l=l_osqp, u=u_osqp, verbose=False)
-        res = prob.solve()
-        dq = res.x
+            # Solve QP
+            # Use OSQP for faster QP solving if available, else fallback to cvxopt
+            # Convert numpy arrays to sparse matrices for OSQP
+            P_osqp = sp.csc_matrix((H + H.T) / 2)  # Ensure symmetry
+            q_osqp = g
+            G_osqp = sp.csc_matrix(G)
+            l_osqp = -np.inf * np.ones(h.shape)
+            u_osqp = h
+
+            prob = osqp.OSQP()
+            prob.setup(P=P_osqp, q=q_osqp, A=G_osqp, l=l_osqp, u=u_osqp, verbose=False)
+            res = prob.solve()
+            dq = res.x
+        
+        else:
+            limits = np.array(self.max_joint_velocities)
+            W_inv = np.diag(limits ** 2)      # Actual inverse
+
+            # Damped weighted pseudoinverse
+            y = 1e-2
+            JWJ = J.dot(W_inv).dot(J.T) + y * np.eye(6)
+            J_wpinv = W_inv.dot(J.T).dot(np.linalg.inv(JWJ))
+
+            dq_primary = J_wpinv.dot(speed_wf)
+
+            # Joint limit avoidance in null space
+            q = np.array(q)
+            q_min = np.array(self.joint_lower_limits)
+            q_max = np.array(self.joint_upper_limits)
+
+            # Potential field for joint limits
+            q_center = (q_min + q_max) / 2
+            q_normalized = (q - q_center) / (q_max - q_min)
+
+            # Repulsion stronger near limits
+            margin = 0.1   # Percentage of range where repulsion starts getting stronger
+            k_base = 0.1   # Base gain
+            k_near_limit = np.ones(n) * k_base
+
+            for i in range(n):
+                # Calculate normalized distance to nearest limit (0 = at limit, 1 = at center)
+                limit_proximity = 1.0 - 2.0 * abs(q_normalized[i])
+                if limit_proximity < margin:
+                    k_near_limit[i] = k_base * (1.0 + 5 * ((margin - limit_proximity)/margin)**2)
+                    
+            # Potential gradient
+            dq_null = -k_near_limit * q_normalized * W_inv.diagonal()
+
+            # Null space projection
+            N = np.eye(n) - J_wpinv.dot(J)
+            
+            dq_sec = N.dot(dq_null)
+            print(f"q_norm, dq_pri, dq_sec: {[f'({2*i:.3f}, {j:.3f}, {k:.3f})' for i, j, k in zip(q_normalized, dq_primary, dq_sec)]}")
+            dq = dq_primary + N.dot(dq_null)
+
+            # Better constraint enforcement - only scale violating joints
+            dt = 1.0 / 240.0
+            q_next = q + dq * dt
+            # for i in range(n):
+            #     if q_next[i] < q_min[i]:
+            #         dq[i] = max(dq[i], (q_min[i] - q[i]) / dt)
+            #     elif q_next[i] > q_max[i]:
+            #         dq[i] = min(dq[i], (q_max[i] - q[i]) / dt)
+                
+            #     # Velocity limit enforcement
+            #     dq[i] = np.clip(dq[i], -limits[i], limits[i])
+            
+            over = np.abs(dq) > limits
+            if np.any(over):
+                s = np.min(limits[over] / np.abs(dq[over]))
+                dq *= s
+                
+            # for i in range(n):
+            #     proximity = abs(q[i] - q_center[i]) / ((q_max[i] - q_min[i])/2)
+            #     if proximity > 0.99:  # Joint is within 1% of limit
+            #         print(f"Joint {i} near limit: {proximity:.2f}, pos: {q[i]:.4f}, limit: [{q_min[i]:.4f}, {q_max[i]:.4f}]")
+
+        time2 = time.perf_counter()
+        speed_timers["solver"] = time2 - time1
+        time1 = time2
+        
+        # print(f"Speed timers: {[f'{k}: {v:.6f}s' for k, v in speed_timers.items()]}")
 
         self.next_vel = dq
-
-            # limits = np.array(self.max_joint_velocities)
-            # # Weighted pseudoinverse, bias movement towards joints with more freedom
-            # W_inv = np.diag(1.0/limits**2)
-
-            # # Damped pseudo inverse, avoid singularities
-            # y = 1e-2
-            # JWJt = J.dot(W_inv).dot(J.T) + y * np.eye(6)
-            # J_wpinv = W_inv.dot(J.T).dot(np.linalg.inv(JWJt))
-            # dq_primary = J_wpinv.dot(speed_wf)
-            # q = np.array(q)
-            # q_min = np.array(self.joint_lower_limits)
-            # q_max = np.array(self.joint_upper_limits)
-
-            # # Compute gradient to avoid joint limits
-            # # qc   = (q_min + q_max)/2
-            # # grad = (q - qc) / (q_max - q_min)**2
-            # epsilon = 1e-3
-            # d_high = np.maximum(q - q_max, epsilon)
-            # d_low  = np.maximum(q_min - q, epsilon)
-            # grad = -2.0/d_low**3 + 2.0/d_high**3
-            # k = 0.4
-            # dq_null = -k * grad
-
-            # # Project in null space
-            # P = np.eye(n) - J_wpinv.dot(J)
-
-            # dq = dq_primary + P.dot(dq_null)
-            # over = np.abs(dq) > limits
-            # if np.any(over):
-            #     s = np.min(limits[over] / np.abs(dq[over]))
-            #     dq *= s
-
-            # self.next_vel = dq
 
     # -----------------------------------------------------------------------------------------------------------
     def update_debug_line(self, line_name: str, start_pos: List[float], end_pos: List[float], kwargs: dict) -> None:
@@ -741,6 +798,8 @@ class Controller(threading.Thread):
                 print(f"Controller thread is running behind schedule by {-sleep_time:.6f}s")
                 if len(thread_times) > 0:
                     print(f"Thread times: ", [f"{name}: {t:.6f}s" for name, t in zip(timenames, thread_times[-1])])
+                    if fsm_times is not None:
+                        print("Fsm times:", [f"{name}: {v:.6f}s" for v, name in fsm_times])
                 next_thread_time = time.perf_counter()
 
         print("Exiting controller thread...")
