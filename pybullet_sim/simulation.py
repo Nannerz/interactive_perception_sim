@@ -47,8 +47,10 @@ class Simulation:
                     bodyUniqueId=self.robot,
                     linkIndex=link,
                     # contactStiffness=7.5e2,
-                    contactStiffness=1e4,
-                    contactDamping=0.5,
+                    # contactStiffness=1e4,
+                    contactStiffness=2e3,
+                    # contactDamping=0.5,
+                    contactDamping=0.8,
                     # collisionMargin=0.0005,
                 )
                 dyn = p.getDynamicsInfo(self.robot, link)
@@ -70,25 +72,23 @@ class Simulation:
         if myobj == "mustard_bottle":
             base_orn = [0, 0, 0]
             base_pos = [0.8, 0.045, 0.06]
-            self.obj = self.create_mustard_bottle(flags, base_orn=base_orn, base_pos=base_pos)
-
-        p.setPhysicsEngineParameter(
-            numSolverIterations=50,
-            contactERP=0.2,  # lower ERP = softer penetrations
-        )
+            # self.obj = self.create_mustard_bottle(flags, base_orn=base_orn, base_pos=base_pos)
+            self.obj = self.create_mustard_bottle(flags)
 
     # -----------------------------------------------------------------------------------------------------------
 
-    def create_mustard_bottle(
-        self, flags, base_orn=[0, 0, 20 * math.pi / 180], base_pos=[0.8, 0.065, 0.08]
-    ) -> int:
+    def create_mustard_bottle(self, 
+                              flags, 
+                              base_orn=[0, 0, 20 * math.pi / 180], 
+                              base_pos=[0.8, 0.065, 0.08]
+                              ) -> int:
 
         base_quat = p.getQuaternionFromEuler(base_orn)
         obj = p.loadURDF(
             os.path.join(ycb_objects.getDataPath(), "YcbMustardBottle", "model.urdf"),
             basePosition=base_pos,
             baseOrientation=base_quat,
-            flags=flags,
+            flags=flags
         )
 
         p.changeDynamics(
@@ -96,8 +96,9 @@ class Simulation:
             linkIndex=-1,
             # contactStiffness=1e4,
             contactStiffness=2e4,
-            contactDamping=0.7,
-            collisionMargin=0.0005,
+            # contactDamping=0.5,
+            contactDamping=0.1,
+            # collisionMargin=0.0005,
         )
 
         return obj

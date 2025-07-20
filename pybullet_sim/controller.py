@@ -38,7 +38,7 @@ class Controller(threading.Thread):
         self.thread_cntr_max = 500
         self.initial_x = 0.7
         self.initial_y = 0.0
-        self.initial_z = 0.12
+        self.initial_z = 0.1
         self.fsm = FSM(
             controller=self,
             initial_x=self.initial_x,
@@ -60,12 +60,13 @@ class Controller(threading.Thread):
         self.wrist_idx = None
         self.right_idx = None
         self.left_idx = None
-        self.parent_map = defaultdict(list)
         self.get_idxs()
 
         self.num_revolute_joints = len(self.revolute_joint_idx)
         self.num_movable_joints = len(self.movable_joint_idxs)
 
+        # ===============================================================================
+        # Variables to write data/plot files
         self.ft_names = ["fx", "fy", "fz", "tx", "ty", "tz"]
         # self.ft_types = ["raw", "comp", "contact"]
         self.ft_types = ["contact_ft", "ema_ft", "feeling_ft"]
@@ -74,25 +75,8 @@ class Controller(threading.Thread):
         self.ft_contact_wrist = [0.0] * 6
         self.ft_ema = [0.0] * 6
         self.ft_feeling = [0.0] * 6
-
-        # self.joint_vels = {joint: 0 for joint in self.revolute_joint_idx}
-
-        self.data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-        os.makedirs(self.data_path, exist_ok=True)
-
-        self.ft_file = os.path.join(self.data_path, "ft_data.csv")
-        self.pos_file = os.path.join(self.data_path, "pos.json")
-        self.vel_file = os.path.join(self.data_path, "vel_data.csv")
-
-        # State variables
-        self.mode = "velocity"
-        self.pause_sim = False
-        self.next_vel = [0.0] * self.num_movable_joints
-        self.next_pos = [0.0] * self.num_movable_joints  # ik_values
-        self.next_pos_ee_xyz = [0.0, 0.0, 0.0]
-        self.next_orn_ee = [0.0, 0.0, 0.0]
-        self.vel_err = [0.0] * self.num_movable_joints
-        self.speed_wf = [0.0] * 6
+        
+        self.speed_world_frame = [0.0] * 6
         self.speed_wrist = [0.0] * 6
         self.speed_names = ["vx", "vy", "vz", "wx", "wy", "wz"]
         self.speed_types = ["v_wf", "v_wrist"]
@@ -107,10 +91,33 @@ class Controller(threading.Thread):
         ]
         self.joint_speed = {name: 0.0 for name in self.speed_keys}
 
+        # ===============================================================================
+        # Data files for plotting & writer thread
+        self.data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+        os.makedirs(self.data_path, exist_ok=True)
+
+        self.ft_file = os.path.join(self.data_path, "ft_data.csv")
+        self.pos_file = os.path.join(self.data_path, "pos.json")
+        self.vel_file = os.path.join(self.data_path, "vel_data.csv")
+        
         self.initialize_plot_files()
         self.data_queue = queue.Queue()
         csv_keys = self.ft_keys + self.speed_keys
         self.data_writer = DataWriter(self.data_queue, self.shutdown_event, self.ft_file, self.pos_file, csv_keys)
+        
+        # ===============================================================================
+        # State variables
+        self.mode = "velocity"
+        self.prev_mode = "velocity"
+        self.pause_sim = False
+        self.next_dq = [0.0] * self.num_movable_joints
+        self.prev_dq = [0.0] * self.num_movable_joints
+        self.next_pos = [0.0] * self.num_movable_joints  # ik_values
+        self.desired_pos_ee = np.zeros(3)
+        self.desired_pos_wrist = np.zeros(3)
+        self.desired_quat_ee = np.zeros(4)
+        self.desired_quat_wrist = np.zeros(4)
+        self.velocity_solver = osqp.OSQP()
 
     # -----------------------------------------------------------------------------------------------------------
     def get_idxs(self) -> None:
@@ -119,9 +126,6 @@ class Controller(threading.Thread):
             for i in range(self.total_num_joints):
                 info = p.getJointInfo(self.robot, i)
                 self.all_joint_idx.append(i)
-
-                parent_link = info[16]
-                self.parent_map[parent_link].append(i)
 
                 if info[2] == p.JOINT_REVOLUTE:
                     self.revolute_joint_idx.append(i)
@@ -139,8 +143,6 @@ class Controller(threading.Thread):
                     self.right_idx = i
                 if info[1].decode("utf-8") == "panda_finger_joint2":
                     self.left_idx = i
-
-        get_idxs = (self.right_idx, self.left_idx, self.wrist_idx, self.ee_link_index)
 
         if not self.ee_link_index:
             print("Could not find end effector link index")
@@ -164,7 +166,7 @@ class Controller(threading.Thread):
 
     def write_data_files(self) -> None:
         for i, name in enumerate(self.speed_names):
-            self.speed[f"{name}_v_wf"] = self.speed_wf[i]
+            self.speed[f"{name}_v_wf"] = self.speed_world_frame[i]
             self.speed[f"{name}_v_wrist"] = self.speed_wrist[i]
 
         for i, name in enumerate(self.ft_names):
@@ -181,19 +183,16 @@ class Controller(threading.Thread):
 
     def write_wf_position(self) -> None:
         with self.sim_lock:
-            link_state = p.getLinkState(self.robot, self.ee_link_index)
-            # ee_position_wf = link_state[4]
-            # ee_orientation_wf = p.getEulerFromQuaternion(link_state[5])
-            ee_position_wf = link_state[0]
-            ee_orientation_wf = p.getEulerFromQuaternion(link_state[1])
+            ee_pos, ee_quat = p.getLinkState(self.robot, self.ee_link_index)[:2]
+            roll, pitch, yaw = np.rad2deg(p.getEulerFromQuaternion(ee_quat))
 
         pos = {
-            "x": ee_position_wf[0],
-            "y": ee_position_wf[1],
-            "z": ee_position_wf[2],
-            "roll": ee_orientation_wf[0] * 180.0 / math.pi,
-            "pitch": ee_orientation_wf[1] * 180.0 / math.pi,
-            "yaw": ee_orientation_wf[2] * 180.0 / math.pi,
+            "x": ee_pos[0],
+            "y": ee_pos[1],
+            "z": ee_pos[2],
+            "roll": roll,
+            "pitch": pitch,
+            "yaw": yaw,
         }
 
         self.data_queue.put({"type": "json", "data": pos})
@@ -201,10 +200,7 @@ class Controller(threading.Thread):
     # -----------------------------------------------------------------------------------------------------------
     def get_contact_ft(self) -> None:
         with self.sim_lock:
-            link_state = p.getLinkState(
-                self.robot, self.wrist_idx, computeForwardKinematics=True
-            )
-            # wrist_pos, wrist_quat = p.getLinkState(self.robot, self.wrist_idx)[:2]
+            link_state = p.getLinkState(self.robot, self.wrist_idx, computeForwardKinematics=True)
             wrist_pos, wrist_quat = link_state[4], link_state[5]
             wrist_pos = np.array(wrist_pos)
 
@@ -216,14 +212,12 @@ class Controller(threading.Thread):
 
             contact_pts = p.getContactPoints(self.robot, self.sim.obj)
 
-        cntr = 0
         if len(contact_pts) <= 0:
             self.ft_contact_wrist = [0.0] * 6
             return
 
         contact_pos = np.zeros(3)
         for pt in contact_pts:
-            cntr += 1
             link = pt[3]
             contact_pos = np.array(pt[5])
             normal = np.array(pt[7])
@@ -297,37 +291,15 @@ class Controller(threading.Thread):
 
     # -----------------------------------------------------------------------------------------------------------
     def apply_speed(self) -> None:
-        limit_hit = False
         with self.sim_lock:
-            # # Check joint limits
-            # for i, joint_idx in enumerate(self.movable_joint_idxs):
-            #     pos = p.getJointState(self.robot, joint_idx)[0]
-            #     margin = 0.02
-
-            #     if pos < self.joint_lower_limits[i] + margin and self.next_vel[i] < 0:
-            #         limit_hit = True
-            #         self.next_vel[i] = 0.0
-            #         print(f"Joint {joint_idx} {self.joint_names[joint_idx]} limit {self.joint_lower_limits[i]} hit at {pos}")
-            #     elif pos > self.joint_upper_limits[i] - margin and self.next_vel[i] > 0:
-            #         limit_hit = True
-            #         self.next_vel[i] = 0.0
-            #         print(f"Joint {joint_idx} {self.joint_names[joint_idx]} limit {self.joint_upper_limits[i]} hit at {pos}")
-
-            #     if limit_hit:
-            #         # v_cmd = [0.0] * self.num_movable_joints
-            #         break
-
             p.setJointMotorControlArray(
                 bodyIndex=self.robot,
                 jointIndices=self.movable_joint_idxs,
                 controlMode=p.VELOCITY_CONTROL,
-                targetVelocities=self.next_vel,
+                targetVelocities=self.next_dq,
                 velocityGains=[1.0] * self.num_movable_joints,
-                # forces = [100] * self.num_movable_joints,
+                # forces = [10] * self.num_movable_joints,
             )
-
-        # print(f"vel_err: {self.vel_err}")
-        # print(*(f"J{i}: {vel: 8.5f}," for i, vel in zip(self.movable_joint_idxs, self.next_vel)))
 
     # -----------------------------------------------------------------------------------------------------------
     def reset_home_pos(self) -> None:
@@ -366,48 +338,33 @@ class Controller(threading.Thread):
                 return False
 
     # -----------------------------------------------------------------------------------------------------------
-    def do_move_pos(
-        self, pos: list = [0, 0, 0], orn: list = [0, 0, 0], max_speed=1.0
-    ) -> None:
-        with self.sim_lock:
-            Kp = 2.1
+    def do_move_pos(self, pos: list = [0, 0, 0], euler_rad: list = [0, 0, 0]) -> None:
+        Kp_lin = 0.7
+        Kp_ang = 0.95
+        
+        pos_err, ang_err = self.get_pos_error(desired_pos=pos, desired_euler_radians=euler_rad)
+        rad_err = np.deg2rad(ang_err)
+                
+        pd_ang = np.array(rad_err) * Kp_ang
+        pd_lin = np.array(pos_err) * Kp_lin
 
-            ls = p.getLinkState(self.robot, self.ee_link_index)
-            # pos_wf = np.array(ls[4])
-            # orn_wf = np.array(ls[5])
-            pos_wf = np.array(ls[0])
-            orn_wf = np.array(ls[1])
-
-            orn_des = p.getQuaternionFromEuler(orn)
-            orn_err = p.getDifferenceQuaternion(orn_wf, orn_des)
-            axis, angle = p.getAxisAngleFromQuaternion(orn_err)
-            pd_ang = np.array(axis) * angle * Kp
-            # pd_ang = np.array(p.getEulerFromQuaternion(orn_err)) * Kp
-            pd_lin = (pos - pos_wf) * Kp
-
-        self.next_pos_ee_xyz = pos
-        self.do_move_velocity(v_des=pd_lin.tolist(), w_des=pd_ang.tolist(), link="ee", wf=True)
+        self.desired_pos_ee = np.array(pos)
+        self.desired_quat_ee = np.array(p.getQuaternionFromEuler(euler_rad))
+        self.do_move_velocity(v_des=pd_lin.tolist(), w_des=pd_ang.tolist(), link="ee", world_frame=True)
 
     # -----------------------------------------------------------------------------------------------------------
-    def get_pos_error(self, desired_pos=None, desired_orn=None):
-        if desired_pos is None:
-            desired_pos = self.next_pos_ee_xyz
-        if desired_orn is None:
-            desired_orn = self.next_orn_ee
+    def get_pos_error(self, desired_pos, desired_euler_radians):
         with self.sim_lock:
-            ls = p.getLinkState(self.robot, self.ee_link_index)
-            ee_pos = ls[0]
-            pos_error = [desired_pos[i] - ee_pos[i] for i in range(3)]
-            current_quat = ls[1]
-            desired_quat = p.getQuaternionFromEuler(desired_orn)
-            # quat_error = p.getDifferenceQuaternion(current_quat, desired_quat)
-            # euler_error = p.getEulerFromQuaternion(quat_error)
-            # euler_error = [angle * 180 / math.pi for angle in euler_error]
-            orn_err = p.getDifferenceQuaternion(current_quat, desired_quat)
-            axis, angle = p.getAxisAngleFromQuaternion(orn_err)
-            euler_error = np.array(axis) * angle * 180 / math.pi
+            ee_pos, ee_quat = p.getLinkState(self.robot, self.ee_link_index)[:2]
+            
+            desired_quat = p.getQuaternionFromEuler(desired_euler_radians)
+            quat_error = p.getDifferenceQuaternion(ee_quat, desired_quat)
+            axis, angle = p.getAxisAngleFromQuaternion(quat_error)
+            
+        ang_error = np.rad2deg(np.array(axis) * angle)
+        pos_error = [desired_pos[i] - ee_pos[i] for i in range(3)]
 
-        return pos_error, euler_error
+        return pos_error, ang_error
 
     # -----------------------------------------------------------------------------------------------------------
     def get_fingertip_pos(self):
@@ -429,12 +386,22 @@ class Controller(threading.Thread):
             right_tip_pos_wf, _ = p.multiplyTransforms(
                 right_base_pos_wf, right_base_orn_wf, right_tip_local, [0, 0, 0, 1]
             )
-            # if self.draw_debug:
-            #     link_state = p.getLinkState(self.robot, self.wrist_idx, computeForwardKinematics=True)
-            #     wrist_pos_wf, wrist_orn_wf = link_state[4], link_state[5]
-
-            #     p.addUserDebugLine(wrist_pos_wf, left_tip_pos_wf,  [1, 0, 0], 5, lifeTime=0.1)
-            #     p.addUserDebugLine(wrist_pos_wf, right_tip_pos_wf, [0, 1, 0], 5, lifeTime=0.1)
+        # if self.draw_debug:
+        #     with self.sim_lock:
+        #         link_state = p.getLinkState(self.robot, self.wrist_idx, computeForwardKinematics=True)
+        #     wrist_pos_wf, wrist_orn_wf = link_state[4], link_state[5]
+            
+        #     start_pos = wrist_pos_wf
+            
+        #     end_pos1 = left_tip_pos_wf
+        #     linecolor1 = [1, 0, 0]
+        #     kwargs1 = {"lineColorRGB": linecolor1, "lineWidth": 5, "lifeTime": 0}
+        #     self.update_debug_line("left_tip", start_pos, end_pos1, kwargs1)
+            
+        #     end_pos2 = right_tip_pos_wf
+        #     linecolor2 = [0, 1, 0]
+        #     kwargs2 = {"lineColorRGB": linecolor2, "lineWidth": 5, "lifeTime": 0}
+        #     self.update_debug_line("right_tip", start_pos, end_pos2, kwargs2)
 
         return right_tip_pos_wf, left_tip_pos_wf
 
@@ -457,6 +424,14 @@ class Controller(threading.Thread):
 
         return right_tip_pos_wrist_frame, left_tip_pos_wrist_frame
 
+
+    def get_wrist_pos(self):
+        with self.sim_lock:
+            wrist_pos, wrist_quat = p.getLinkState(self.robot, self.wrist_idx)[:2]
+            wrist_pos = np.array(wrist_pos)
+            wrist_quat = np.array(wrist_quat)
+
+        return wrist_pos, wrist_quat
     # -----------------------------------------------------------------------------------------------------------
     # def calc_spin_around(self, w_des, right_finger = True):
     #     w_des_local = np.array(w_des)
@@ -471,11 +446,7 @@ class Controller(threading.Thread):
 
     #     self.do_move_velocity(v_des=v_des_local.tolist(), w_des=w_des_local.tolist(), link='wrist', wf=False)
     # -----------------------------------------------------------------------------------------------------------
-    def do_move_velocity(self, v_des, w_des, link="wrist", wf=False) -> None:
-        
-        speed_timers = {}
-        time1 = time.perf_counter()
-        start_time = time1
+    def do_move_velocity(self, v_des, w_des, link="wrist", world_frame=False) -> None:
         if link == "wrist":
             link = self.wrist_idx
         else:  # link == 'ee':
@@ -483,194 +454,159 @@ class Controller(threading.Thread):
 
         # wf = world frame
         with self.sim_lock:
-            ee_pos_wf, ee_orn_wf = p.getLinkState(self.robot, self.ee_link_index, computeForwardKinematics=True)[:2]
-            
-        time2 = time.perf_counter()
-        speed_timers["getstate"] = time2 - time1
-        time1 = time2
+            # cur_pos_world_frame, cur_quat_world_frame = p.getLinkState(self.robot, self.ee_link_index, computeForwardKinematics=True)[:2]
+            cur_pos_world_frame, cur_quat_world_frame = p.getLinkState(self.robot, link, computeForwardKinematics=True)[:2]
+            # wrist_pos_world_frame, wrist_orn_world_frame = p.getLinkState(self.robot, self.wrist_idx, computeForwardKinematics=True)[:2]
+            # ee_pos_world_frame, ee_quat_world_frame = p.getLinkState(self.robot, self.ee_link_index, computeForwardKinematics=True)[:2]
 
-        # direction is just + or - 1
         # convert speed to world frame
-        self.speed_wrist = [0.0] * 6
-        if wf:
-            v_wf = np.array(v_des)
-            w_wf = np.array(w_des)
+        if world_frame:
+            v_world_frame = np.array(v_des)
+            w_world_frame = np.array(w_des)
         else:
-            self.speed_wrist[0:3] = v_des
-            self.speed_wrist[3:6] = w_des
             with self.sim_lock:
-                R_wrist2world = np.array(p.getMatrixFromQuaternion(ee_orn_wf)).reshape(3, 3)
-            v_wf = R_wrist2world.dot(np.array(v_des))
-            w_wf = R_wrist2world.dot(np.array(w_des))
+                R_wrist2world = np.array(p.getMatrixFromQuaternion(cur_quat_world_frame)).reshape(3, 3)
+            v_world_frame = R_wrist2world.dot(np.array(v_des))
+            w_world_frame = R_wrist2world.dot(np.array(w_des))
+        
+        # # Position feedback
+        # pos_err = np.zeros(3)
+        # if link == 'wrist':
+        #     pos_err = self.desired_pos_wrist - np.array(cur_pos_world_frame)
+        #     self.desired_pos_wrist = self.desired_pos_wrist + np.array(v_world_frame) * self.interval
+        # else:
+        #     pos_err = self.desired_pos_ee - np.array(cur_pos_world_frame)
+        #     self.desired_pos_ee = self.desired_pos_ee + np.array(v_world_frame) * self.interval
 
-        time2 = time.perf_counter()
-        speed_timers["rotate"] = time2 - time1
-        time1 = time2
+        # Kp_lin = 0.12
+        # v_world_frame = v_world_frame + Kp_lin * pos_err
 
-        # debug direction
+        # # Rotational feedback
+        # if link == 'wrist':
+        #     prev_quat = self.desired_quat_wrist
+        # else:
+        #     prev_quat = self.desired_quat_ee
+
+        # if np.linalg.norm(w_world_frame) > 1e-6:
+        #     axis_w = w_world_frame / np.linalg.norm(w_world_frame)
+        #     angle_w = np.linalg.norm(w_world_frame) * self.interval
+        #     delta_quat = p.getQuaternionFromAxisAngle(axis_w.tolist(), angle_w)
+        #     desired_quat = p.multiplyTransforms([0,0,0], delta_quat, [0,0,0], prev_quat)[1]
+        # else:
+        #     desired_quat = prev_quat
+
+        # # normalize and store desired quaternion
+        # desired_quat = np.array(desired_quat)
+        # desired_quat /= np.linalg.norm(desired_quat)
+        # if link == 'wrist':
+        #     self.desired_quat_wrist = desired_quat.tolist()
+        # else:
+        #     self.desired_quat_ee = desired_quat.tolist()
+
+        # # compute error quaternion and corrective angular velocity
+        # quat_error = p.getDifferenceQuaternion(cur_quat_world_frame, desired_quat)
+        # axis_err, angle_err = p.getAxisAngleFromQuaternion(quat_error)
+        # if angle_err > np.pi:
+        #     angle_err -= 2 * np.pi
+        # elif angle_err < -np.pi:
+        #     angle_err += 2 * np.pi
+
+        # Kp_ang = 0.2
+        # if abs(angle_err) < 1e-6 or np.linalg.norm(axis_err) < 1e-6:
+        #     w_correction = np.zeros(3)
+        # else:
+        #     axis_n = np.array(axis_err) / np.linalg.norm(axis_err)
+        #     w_correction = axis_n * (angle_err * Kp_ang)
+
+        # # total commanded angular velocity
+        # w_world_frame = w_world_frame + w_correction
+                
+        self.speed_world_frame = np.hstack((v_world_frame, w_world_frame))
+        
+        with self.sim_lock:
+            R_wrist2world = np.array(p.getMatrixFromQuaternion(cur_quat_world_frame)).reshape(3, 3)
+        v_wrist = R_wrist2world.T.dot(v_world_frame)
+        w_wrist = R_wrist2world.T.dot(w_world_frame)
+        self.speed_wrist[:3] = v_wrist
+        self.speed_wrist[3:] = w_wrist
+
+        # Draw debug lines showing the desired velocities
         if self.draw_debug:
-            start_pos = np.array(ee_pos_wf)
-            end_pos = start_pos + v_wf * 0.5
-            
+            start_pos = np.array(cur_pos_world_frame)
+            end_pos = start_pos + v_world_frame * 0.5
             kwargs = {"lineColorRGB": [0, 0, 1], "lineWidth": 3, "lifeTime": 0}
             self.update_debug_line("v_wf", start_pos, end_pos, kwargs)
 
-            end_pos = start_pos + w_wf * 0.5
+            end_pos = start_pos + w_world_frame * 0.5
             kwargs = {"lineColorRGB": [1, 0, 0], "lineWidth": 3, "lifeTime": 0}
             self.update_debug_line("w_wf", start_pos, end_pos, kwargs)
-            time2 = time.perf_counter()
-            speed_timers["draw_debug"] = time2 - time1
-            time1 = time2
 
-        speed_wf = np.hstack((v_wf, w_wf))
-        self.speed_wf = speed_wf
-        # print(f"speed_wf: {self.speed_wf}")
-
+        # Get current jacobian
         with self.sim_lock:
             joint_states = p.getJointStates(self.robot, self.movable_joint_idxs)
             q = [joint_state[0] for joint_state in joint_states]
             qd = [joint_state[1] for joint_state in joint_states]
-            qdd = [qd[i] / (1.0 / 240.0) for i in range(self.num_movable_joints)]
-            # zeros = [0.0] * self.num_movable_joints
+            qdd = [qd[i] / self.interval for i in range(self.num_movable_joints)]
 
             # Jacobian, world frame
             J_lin, J_ang = p.calculateJacobian(
                 bodyUniqueId=self.robot,
-                linkIndex=self.wrist_idx,
-                # linkIndex = self.ee_link_index,
+                linkIndex=link,
                 localPosition=[0, 0, 0],
                 objPositions=q,
                 objVelocities=qd,
                 objAccelerations=qdd,
             )
-            
-        time2 = time.perf_counter()
-        speed_timers["calc_jacob"] = time2 - time1
-        time1 = time2
 
         J = np.vstack((np.array(J_lin), np.array(J_ang)))
         n = J.shape[1]
 
-        # solve_mode = 'osqp'
-        solve_mode = 'matrix'
-        if 'osqp' in solve_mode:
+        dt = self.interval
+        y = 1e-2
+        q = np.array(q)
+        q_min = np.array(self.joint_lower_limits)
+        q_max = np.array(self.joint_upper_limits)
+        dq_limits = np.array(self.max_joint_velocities)
+        W = np.diag((1.0 / dq_limits) ** 2)
 
-            alpha = 1e-2
-            dt = 1.0 / 240.0
-            y = 1e-2
-            q = np.array(q)
-            q_min = np.array(self.joint_lower_limits)
-            q_max = np.array(self.joint_upper_limits)
-            limits = np.array(self.max_joint_velocities)
-            W = np.diag((1.0 / limits) ** 2)
+        # Quadratic cost: 0.5 * dq.T H dq + g.T dq
+        H = J.T.dot(J) + y * W
+        g = -J.T.dot(self.speed_world_frame)
 
-            # Quadratic cost: ½ dqᵀ H dq + gᵀ dq
-            # H = J.T.dot(J) + alpha * np.eye(n)
-            H = J.T.dot(J) + y * W
-            g = -J.T.dot(speed_wf)
+        # Calculate joint velocity limit based on current position and distance to limits
+        dq_q_lower = np.where(q > q_min, (q_min - q) / dt, 0)
+        dq_q_upper = np.where(q < q_max, (q_max - q) / dt, 0)
 
-            # Joint velocity bounds from position limits:
-            #  q + dq·dt ≥ q_min  ⇒ dq ≥ (q_min - q)/dt
-            #  q + dq·dt ≤ q_max  ⇒ dq ≤ (q_max - q)/dt
-            lb = (q_min - q) / dt
-            ub = (q_max - q) / dt
+        dq_upper_bound = np.minimum(dq_q_upper, dq_limits)
+        dq_lower_bound = np.maximum(dq_q_lower, -dq_limits)
 
-            # Inequality G dq ≤ h encapsulating both bounds:
-            #  dq ≤ ub   →  I dq ≤ ub
-            #  -dq ≤ -lb → -I dq ≤ -lb
-            G = np.vstack((np.eye(n), -np.eye(n)))
-            h = np.hstack((ub, -lb))
+        # G dq <= h
+        #  dq <= ub     ->    I dq <= ub
+        # -dq <= -lb   ->   -I dq <= -lb
+        G = np.vstack((np.eye(n), -np.eye(n)))
+        h = np.hstack((dq_upper_bound, -dq_lower_bound))
 
-            # Convert to cvxopt matrices
-            # P = matrix(H)
-            # q_cvx = matrix(g)
-            # G_cvx = matrix(G)
-            # h_cvx = matrix(h)
+        # use osqp, need to convert numpy arrays to sparse matrices
+        P_osqp = sp.csc_matrix((H + H.T) / 2)  # Ensure symmetry
+        q_osqp = g
+        G_osqp = sp.csc_matrix(G)
+        l_osqp = -np.inf * np.ones(h.shape)
+        u_osqp = h
 
-            # Solve QP
-            # Use OSQP for faster QP solving if available, else fallback to cvxopt
-            # Convert numpy arrays to sparse matrices for OSQP
-            P_osqp = sp.csc_matrix((H + H.T) / 2)  # Ensure symmetry
-            q_osqp = g
-            G_osqp = sp.csc_matrix(G)
-            l_osqp = -np.inf * np.ones(h.shape)
-            u_osqp = h
+        self.velocity_solver.setup(P=P_osqp, q=q_osqp, A=G_osqp, l=l_osqp, u=u_osqp, verbose=False)
+        res = self.velocity_solver.solve()
+        dq = res.x
 
-            prob = osqp.OSQP()
-            prob.setup(P=P_osqp, q=q_osqp, A=G_osqp, l=l_osqp, u=u_osqp, verbose=False)
-            res = prob.solve()
-            dq = res.x
+        # Enforce max joint velocities
+        over = np.abs(dq) > dq_limits
+        if np.any(over):
+            s = np.min(dq_limits[over] / np.abs(dq[over]))
+            dq *= s
         
-        else:
-            limits = np.array(self.max_joint_velocities)
-            W_inv = np.diag(limits ** 2)      # Actual inverse
-
-            # Damped weighted pseudoinverse
-            y = 1e-2
-            JWJ = J.dot(W_inv).dot(J.T) + y * np.eye(6)
-            J_wpinv = W_inv.dot(J.T).dot(np.linalg.inv(JWJ))
-
-            dq_primary = J_wpinv.dot(speed_wf)
-
-            # Joint limit avoidance in null space
-            q = np.array(q)
-            q_min = np.array(self.joint_lower_limits)
-            q_max = np.array(self.joint_upper_limits)
-
-            # Potential field for joint limits
-            q_center = (q_min + q_max) / 2
-            q_normalized = (q - q_center) / (q_max - q_min)
-
-            # Repulsion stronger near limits
-            margin = 0.1   # Percentage of range where repulsion starts getting stronger
-            k_base = 0.1   # Base gain
-            k_near_limit = np.ones(n) * k_base
-
-            for i in range(n):
-                # Calculate normalized distance to nearest limit (0 = at limit, 1 = at center)
-                limit_proximity = 1.0 - 2.0 * abs(q_normalized[i])
-                if limit_proximity < margin:
-                    k_near_limit[i] = k_base * (1.0 + 5 * ((margin - limit_proximity)/margin)**2)
-                    
-            # Potential gradient
-            dq_null = -k_near_limit * q_normalized * W_inv.diagonal()
-
-            # Null space projection
-            N = np.eye(n) - J_wpinv.dot(J)
-            
-            dq_sec = N.dot(dq_null)
-            print(f"q_norm, dq_pri, dq_sec: {[f'({2*i:.3f}, {j:.3f}, {k:.3f})' for i, j, k in zip(q_normalized, dq_primary, dq_sec)]}")
-            dq = dq_primary + N.dot(dq_null)
-
-            # Better constraint enforcement - only scale violating joints
-            dt = 1.0 / 240.0
-            q_next = q + dq * dt
-            # for i in range(n):
-            #     if q_next[i] < q_min[i]:
-            #         dq[i] = max(dq[i], (q_min[i] - q[i]) / dt)
-            #     elif q_next[i] > q_max[i]:
-            #         dq[i] = min(dq[i], (q_max[i] - q[i]) / dt)
-                
-            #     # Velocity limit enforcement
-            #     dq[i] = np.clip(dq[i], -limits[i], limits[i])
-            
-            over = np.abs(dq) > limits
-            if np.any(over):
-                s = np.min(limits[over] / np.abs(dq[over]))
-                dq *= s
-                
-            # for i in range(n):
-            #     proximity = abs(q[i] - q_center[i]) / ((q_max[i] - q_min[i])/2)
-            #     if proximity > 0.99:  # Joint is within 1% of limit
-            #         print(f"Joint {i} near limit: {proximity:.2f}, pos: {q[i]:.4f}, limit: [{q_min[i]:.4f}, {q_max[i]:.4f}]")
-
-        time2 = time.perf_counter()
-        speed_timers["solver"] = time2 - time1
-        time1 = time2
+        # Keep fingers open
+        dq[-2:] = self.max_joint_velocities[-2:]
         
-        # print(f"Speed timers: {[f'{k}: {v:.6f}s' for k, v in speed_timers.items()]}")
-
-        self.next_vel = dq
+        self.next_dq = dq
 
     # -----------------------------------------------------------------------------------------------------------
     def update_debug_line(self, line_name: str, start_pos: List[float], end_pos: List[float], kwargs: dict) -> None:
@@ -686,7 +622,6 @@ class Controller(threading.Thread):
     # -----------------------------------------------------------------------------------------------------------
     def run(self) -> None:
         next_thread_time = time.perf_counter()
-        prev_sleep_time = next_thread_time
         interval = self.interval
         thread_cntr = 0
         thread_times = []
@@ -695,8 +630,6 @@ class Controller(threading.Thread):
             thread_start_time = time.perf_counter()
             prev_time = thread_start_time
             
-            # with self.sim_lock:
-                # p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 0)
             timediff = []
             timenames = []
             
@@ -705,7 +638,8 @@ class Controller(threading.Thread):
                 timediff.append(cur_time - prev_time)
                 prev_time = cur_time
                 timenames.append("vis_off")
-                
+            
+            # Press Q to pause/unpause simulation at runtime
             with self.sim_lock: 
                 qKey = ord("q")
                 keys = p.getKeyboardEvents()
@@ -724,9 +658,6 @@ class Controller(threading.Thread):
                 timenames.append("input_check")
 
             if self.pause_sim == False:
-                # with self.sim_lock:
-                    # p.removeAllUserDebugItems()
-                    
                 self.get_contact_ft()
                 if self.do_timers:
                     cur_time = time.perf_counter()
@@ -734,7 +665,7 @@ class Controller(threading.Thread):
                     prev_time = cur_time
                     timenames.append("get_contact_ft")
 
-                fsm_times = self.fsm.next_state()
+                self.fsm.next_state()
                 if self.do_timers:
                     cur_time = time.perf_counter()
                     timediff.append(cur_time - prev_time)
@@ -746,12 +677,16 @@ class Controller(threading.Thread):
                         pass
                         # self.go_to_desired_position()
                     case "velocity":
-                        # self.do_move_velocity(type='linear', speed=[0.0, 0.0, 0.01])
+                        if self.prev_mode != "velocity":
+                            self.desired_pos_ee, self.desired_quat_ee = p.getLinkState(self.robot, self.ee_link_index, computeForwardKinematics=True)[:2]
+                            self.desired_pos_wrist, self.desired_quat_wrist = p.getLinkState(self.robot, self.wrist_idx, computeForwardKinematics=True)[:2]
                         self.apply_speed()
                     case _:
                         # print("Unknown mode, stopping movement...")
                         # self.stop_movement()
                         pass
+                
+                self.prev_mode = self.mode
 
                 if self.do_timers:
                     cur_time = time.perf_counter()
@@ -767,12 +702,6 @@ class Controller(threading.Thread):
                     timediff.append(cur_time - prev_time)
                     prev_time = cur_time
                     timenames.append("write_data_files")
-            
-            else:
-                pass
-            
-            # with self.sim_lock:
-                # p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 1)
             
             current_time = time.perf_counter()
             elapsed_time = current_time - thread_start_time
@@ -798,8 +727,6 @@ class Controller(threading.Thread):
                 print(f"Controller thread is running behind schedule by {-sleep_time:.6f}s")
                 if len(thread_times) > 0:
                     print(f"Thread times: ", [f"{name}: {t:.6f}s" for name, t in zip(timenames, thread_times[-1])])
-                    if fsm_times is not None:
-                        print("Fsm times:", [f"{name}: {v:.6f}s" for v, name in fsm_times])
                 next_thread_time = time.perf_counter()
 
         print("Exiting controller thread...")

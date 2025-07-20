@@ -42,9 +42,9 @@ class FTPlotter():
                 line, = ax.plot([], [], label=f"{val}_{name}")
                 lines[(name, val)] = line
             ax.legend(loc="upper right")
-            ax.set_ylabel("Force/Torque")
+            ax.set_ylabel(".")
 
-        axes[-1].set_xlabel("Sample #")
+        axes[-1].set_xlabel(".")
 
         def animate(frame):
             # read previous max_samples data & update plots
