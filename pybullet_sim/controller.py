@@ -34,8 +34,8 @@ class Controller(threading.Thread):
         self.do_timers = do_timers
         self.debug_lines = {}
         # self.prev_debug_lines = []
-        self.interval = 0.01 # 10 ms
-        self.thread_cntr_max = 500
+        self.interval = 0.005 # 5ms
+        self.thread_cntr_max = 5/self.interval
         self.initial_x = 0.7
         self.initial_y = 0.0
         self.initial_z = 0.1
@@ -75,20 +75,18 @@ class Controller(threading.Thread):
         self.ft_contact_wrist = [0.0] * 6
         self.ft_ema = [0.0] * 6
         self.ft_feeling = [0.0] * 6
-        
-        self.speed_world_frame = [0.0] * 6
-        self.speed_wrist = [0.0] * 6
+
+        self.speed_world_frame = [0] * 6
+        self.speed_wrist = [0] * 6
         self.speed_names = ["vx", "vy", "vz", "wx", "wy", "wz"]
         self.speed_types = ["v_wf", "v_wrist"]
         self.speed_keys = [f"{name}_{type}" for type in self.speed_types for name in self.speed_names]
         self.speed = {name: 0.0 for name in self.speed_keys}
 
         self.joint_types = ["jointspeed"]
-        self.joint_keys = [
-            f"{name}_{type}"
-            for type in self.joint_types
-            for name in self.movable_joint_idxs
-        ]
+        self.joint_keys = [f"{name}_{type}"
+                           for type in self.joint_types
+                           for name in self.movable_joint_idxs]
         self.joint_speed = {name: 0.0 for name in self.speed_keys}
 
         # ===============================================================================
@@ -201,22 +199,23 @@ class Controller(threading.Thread):
     def get_contact_ft(self) -> None:
         with self.sim_lock:
             link_state = p.getLinkState(self.robot, self.wrist_idx, computeForwardKinematics=True)
-            wrist_pos, wrist_quat = link_state[4], link_state[5]
+            # using center of mass for force stuff
+            wrist_pos, wrist_quat = link_state[:2]
             wrist_pos = np.array(wrist_pos)
 
             rot_wrist_world = np.array(p.getMatrixFromQuaternion(wrist_quat)).reshape(3, 3)
             rot_world_to_wrist = rot_wrist_world.T
-
-            total_force_world = np.zeros(3)
-            total_torque_world = np.zeros(3)
 
             contact_pts = p.getContactPoints(self.robot, self.sim.obj)
 
         if len(contact_pts) <= 0:
             self.ft_contact_wrist = [0.0] * 6
             return
-
+        
+        total_force_world = np.zeros(3)
+        total_torque_world = np.zeros(3)
         contact_pos = np.zeros(3)
+        
         for pt in contact_pts:
             link = pt[3]
             contact_pos = np.array(pt[5])
@@ -228,9 +227,6 @@ class Controller(threading.Thread):
             lateral_dir2 = np.array(pt[13])
             f_lat2 = pt[12]
 
-            if link <= self.wrist_idx:
-                continue
-
             contact_force = fn * normal + f_lat1 * lateral_dir1 + f_lat2 * lateral_dir2
 
             r = contact_pos - wrist_pos
@@ -238,6 +234,12 @@ class Controller(threading.Thread):
 
             total_force_world += contact_force
             total_torque_world += torque
+
+            # print(f"DEBUG contact: link: {link}, cntr: {cntr}, "
+            #       f"norm: {[f"{x:.6f}" for x in rot_world_to_wrist @ (fn * normal)]}, "
+            #       f"ff1: {[f"{x:.6f}" for x in rot_world_to_wrist @ (f_lat1 * lateral_dir1)]}, "
+            #       f"ff2: {[f"{x:.6f}" for x in rot_world_to_wrist @ (f_lat2 * lateral_dir2)]}, "
+            #       f"total: {[f"{x:.6f}" for x in rot_world_to_wrist @ total_force_world]}")
 
         total_force_local = rot_world_to_wrist @ total_force_world
         total_torque_local = rot_world_to_wrist @ total_torque_world
@@ -250,10 +252,6 @@ class Controller(threading.Thread):
             start_pos = contact_pos
 
             for i in range(3):
-                # force_world = np.zeros(3)
-                # force_world[i] = total_force_world[i]
-                # end_pos_force = start_pos + force_world
-
                 force_local = np.zeros(3)
                 force_local[i] = total_force_local[i]
                 force_world = rot_wrist_world @ force_local
@@ -265,10 +263,6 @@ class Controller(threading.Thread):
                 kwargs = {"lineColorRGB": linecolor, "lineWidth": 5, "lifeTime": 0}
                 self.update_debug_line("force_wrist", start_pos, end_pos_force, kwargs)
 
-                # torque_world = np.zeros(3)
-                # torque_world[i] = total_torque_world[i]
-                # end_pos_torque = start_pos + torque_world
-
                 torque_local = np.zeros(3)
                 torque_local[i] = total_torque_local[i]
                 torque_world = rot_wrist_world @ torque_local
@@ -277,7 +271,7 @@ class Controller(threading.Thread):
                 linecolor[i] = 0.25
 
                 kwargs = {"lineColorRGB": linecolor, "lineWidth": 8, "lifeTime": 0}
-                self.update_debug_line("torque_wrist", start_pos, end_pos_force, kwargs)
+                self.update_debug_line("torque_wrist", start_pos, end_pos_torque, kwargs)
 
     # -----------------------------------------------------------------------------------------------------------
     def stop_movement(self) -> None:
@@ -298,7 +292,7 @@ class Controller(threading.Thread):
                 controlMode=p.VELOCITY_CONTROL,
                 targetVelocities=self.next_dq,
                 velocityGains=[1.0] * self.num_movable_joints,
-                # forces = [10] * self.num_movable_joints,
+                forces = [100] * self.num_movable_joints,
             )
 
     # -----------------------------------------------------------------------------------------------------------
@@ -369,7 +363,7 @@ class Controller(threading.Thread):
     # -----------------------------------------------------------------------------------------------------------
     def get_fingertip_pos(self):
         finger_length = 0.055
-        finger_side_offset = 0.008
+        finger_side_offset = 0.007
         right_tip_local = [0, finger_side_offset, finger_length]
         left_tip_local = [0, -finger_side_offset, finger_length]
 
@@ -424,7 +418,7 @@ class Controller(threading.Thread):
 
         return right_tip_pos_wrist_frame, left_tip_pos_wrist_frame
 
-
+    # -----------------------------------------------------------------------------------------------------------
     def get_wrist_pos(self):
         with self.sim_lock:
             wrist_pos, wrist_quat = p.getLinkState(self.robot, self.wrist_idx)[:2]
@@ -454,22 +448,26 @@ class Controller(threading.Thread):
 
         # wf = world frame
         with self.sim_lock:
-            # cur_pos_world_frame, cur_quat_world_frame = p.getLinkState(self.robot, self.ee_link_index, computeForwardKinematics=True)[:2]
-            cur_pos_world_frame, cur_quat_world_frame = p.getLinkState(self.robot, link, computeForwardKinematics=True)[:2]
-            # wrist_pos_world_frame, wrist_orn_world_frame = p.getLinkState(self.robot, self.wrist_idx, computeForwardKinematics=True)[:2]
-            # ee_pos_world_frame, ee_quat_world_frame = p.getLinkState(self.robot, self.ee_link_index, computeForwardKinematics=True)[:2]
+            # use link positions for calculating movement
+            ls = p.getLinkState(self.robot, link, computeLinkVelocity=True, computeForwardKinematics=True)
+            cur_pos_world_frame, cur_quat_world_frame = ls[4], ls[5]
 
+        with self.sim_lock:
+            R_wrist2world = np.array(p.getMatrixFromQuaternion(cur_quat_world_frame)).reshape(3, 3)
+            
         # convert speed to world frame
         if world_frame:
             v_world_frame = np.array(v_des)
             w_world_frame = np.array(w_des)
         else:
-            with self.sim_lock:
-                R_wrist2world = np.array(p.getMatrixFromQuaternion(cur_quat_world_frame)).reshape(3, 3)
             v_world_frame = R_wrist2world.dot(np.array(v_des))
             w_world_frame = R_wrist2world.dot(np.array(w_des))
+            
+        # print(f"DEBUG desired v: {[f"{s:.6f}" for s in v_world_frame]}, w: {[f"{s:.6f}" for s in w_world_frame]}")
         
         # # Position feedback
+        # # feedback_clip = 1/5
+        # feedback_clip = 1
         # pos_err = np.zeros(3)
         # if link == 'wrist':
         #     pos_err = self.desired_pos_wrist - np.array(cur_pos_world_frame)
@@ -478,8 +476,10 @@ class Controller(threading.Thread):
         #     pos_err = self.desired_pos_ee - np.array(cur_pos_world_frame)
         #     self.desired_pos_ee = self.desired_pos_ee + np.array(v_world_frame) * self.interval
 
-        # Kp_lin = 0.12
-        # v_world_frame = v_world_frame + Kp_lin * pos_err
+        # Kp_lin = 0.08
+        # v_correct = Kp_lin * pos_err
+        # # np.clip(v_correct, -np.abs(v_world_frame * feedback_clip), np.abs(v_world_frame * feedback_clip), out=v_correct)
+        # v_world_frame = v_world_frame + v_correct
 
         # # Rotational feedback
         # if link == 'wrist':
@@ -511,7 +511,7 @@ class Controller(threading.Thread):
         # elif angle_err < -np.pi:
         #     angle_err += 2 * np.pi
 
-        # Kp_ang = 0.2
+        # Kp_ang = 0.14
         # if abs(angle_err) < 1e-6 or np.linalg.norm(axis_err) < 1e-6:
         #     w_correction = np.zeros(3)
         # else:
@@ -519,27 +519,59 @@ class Controller(threading.Thread):
         #     w_correction = axis_n * (angle_err * Kp_ang)
 
         # # total commanded angular velocity
+        # # np.clip(w_correction, -np.abs(w_world_frame * feedback_clip), np.abs(w_world_frame * feedback_clip), out=w_correction)
         # w_world_frame = w_world_frame + w_correction
-                
+
         self.speed_world_frame = np.hstack((v_world_frame, w_world_frame))
         
-        with self.sim_lock:
-            R_wrist2world = np.array(p.getMatrixFromQuaternion(cur_quat_world_frame)).reshape(3, 3)
         v_wrist = R_wrist2world.T.dot(v_world_frame)
         w_wrist = R_wrist2world.T.dot(w_world_frame)
+
         self.speed_wrist[:3] = v_wrist
         self.speed_wrist[3:] = w_wrist
 
         # Draw debug lines showing the desired velocities
         if self.draw_debug:
+            start_pos = np.zeros(3)
             start_pos = np.array(cur_pos_world_frame)
-            end_pos = start_pos + v_world_frame * 0.5
-            kwargs = {"lineColorRGB": [0, 0, 1], "lineWidth": 3, "lifeTime": 0}
+
+            v_world_frame = np.where(np.abs(v_world_frame) < 1e-6, 1e-6, v_world_frame)
+            v_hat = v_world_frame / np.linalg.norm(v_world_frame)
+            end_pos = start_pos + (v_hat * 0.3)
+            kwargs = {"lineColorRGB": [0, 0, 1], "lineWidth": 3, "lifeTime": 0} # blue
             self.update_debug_line("v_wf", start_pos, end_pos, kwargs)
 
-            end_pos = start_pos + w_world_frame * 0.5
-            kwargs = {"lineColorRGB": [1, 0, 0], "lineWidth": 3, "lifeTime": 0}
+            w_world_frame = np.where(np.abs(w_world_frame) < 1e-6, 1e-6, w_world_frame)
+            w_hat = w_world_frame / np.linalg.norm(w_world_frame)
+            end_pos = start_pos + (w_hat * 0.3)
+            kwargs = {"lineColorRGB": [1, 0, 0], "lineWidth": 3, "lifeTime": 0} # red
             self.update_debug_line("w_wf", start_pos, end_pos, kwargs)
+            
+            ax_len = 0.2
+            orn_ee_x = np.array([ax_len, 0, 0])
+            orn_ee_y = np.array([0, ax_len, 0])
+            orn_ee_z = np.array([0, 0, ax_len])
+            
+            with self.sim_lock:
+                ee_pos_world_frame, ee_quat_world_frame = p.getLinkState(self.robot, self.wrist_idx, computeForwardKinematics=True)[:2]
+                R_ee2world = np.array(p.getMatrixFromQuaternion(ee_quat_world_frame)).reshape(3, 3)
+
+            start_pos = np.array(ee_pos_world_frame)
+            orn_ee_x_wf = R_ee2world.dot(orn_ee_x)
+            orn_ee_y_wf = R_ee2world.dot(orn_ee_y)
+            orn_ee_z_wf = R_ee2world.dot(orn_ee_z)
+
+            kwargs = {"lineColorRGB": [1, 0, 0], "lineWidth": 1, "lifeTime": 0} # red
+            end_pos = start_pos + orn_ee_x_wf
+            self.update_debug_line("wrist_orn_x", start_pos, end_pos, kwargs)
+
+            kwargs = {"lineColorRGB": [0, 1, 0], "lineWidth": 1, "lifeTime": 0} # green
+            end_pos = start_pos + orn_ee_y_wf
+            self.update_debug_line("wrist_orn_y", start_pos, end_pos, kwargs)
+
+            kwargs = {"lineColorRGB": [0, 0, 1], "lineWidth": 1, "lifeTime": 0} # blue
+            end_pos = start_pos + orn_ee_z_wf
+            self.update_debug_line("wrist_orn_z", start_pos, end_pos, kwargs)
 
         # Get current jacobian
         with self.sim_lock:
@@ -678,8 +710,10 @@ class Controller(threading.Thread):
                         # self.go_to_desired_position()
                     case "velocity":
                         if self.prev_mode != "velocity":
-                            self.desired_pos_ee, self.desired_quat_ee = p.getLinkState(self.robot, self.ee_link_index, computeForwardKinematics=True)[:2]
-                            self.desired_pos_wrist, self.desired_quat_wrist = p.getLinkState(self.robot, self.wrist_idx, computeForwardKinematics=True)[:2]
+                            ls = p.getLinkState(self.robot, self.ee_link_index, computeForwardKinematics=True)
+                            self.desired_pos_ee, self.desired_quat_ee = ls[4], ls[5]
+                            ls = p.getLinkState(self.robot, self.wrist_idx, computeForwardKinematics=True)
+                            self.desired_pos_wrist, self.desired_quat_wrist = ls[4], ls[5]
                         self.apply_speed()
                     case _:
                         # print("Unknown mode, stopping movement...")
@@ -702,7 +736,16 @@ class Controller(threading.Thread):
                     timediff.append(cur_time - prev_time)
                     prev_time = cur_time
                     timenames.append("write_data_files")
-            
+                
+                # with self.sim_lock:
+                #     p.stepSimulation()
+
+                # if self.do_timers:
+                #     cur_time = time.perf_counter()
+                #     timediff.append(cur_time - prev_time)
+                #     prev_time = cur_time
+                #     timenames.append("step_simulation")
+
             current_time = time.perf_counter()
             elapsed_time = current_time - thread_start_time
             if elapsed_time > interval:

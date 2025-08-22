@@ -12,7 +12,7 @@ class FTPlotter():
             raise FileNotFoundError(f"CSV file not found: {self.csv_file}")
 
         self.data_map = self.get_data_map()
-        self.max_samples = 500
+        self.max_samples = 1000
 # -----------------------------------------------------------------------------------------------------------
     def get_data_map(self) -> list:
         with open(self.csv_file, newline='') as f:
