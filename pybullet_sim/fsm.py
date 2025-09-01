@@ -25,13 +25,14 @@ class FSM:
         self.initial_z = initial_z
         self.startup_cntr = 0
         self.orn = [0, 0, 0, 1]
+        self.done = False
         
         per_sec = self.interval
 
         # Forward/keep contact
         # self.forward_kp = 0.0675
         self.forward_kp_initial = 0.05
-        self.forward_kp = 0.01
+        self.forward_kp = 0.02
         self.touched_once = False
         self.is_touching = False
 
@@ -46,8 +47,8 @@ class FSM:
         self.wiggle_total_cntr = 0
         self.doing_wiggle = False
         # self.wiggle_w_yaw = 1.0 * per_sec
-        self.wiggle_w_yaw = 3.5 * per_sec
-        self.wiggle_w_pitch = 3.5 * per_sec
+        self.wiggle_w_yaw = 4.0 * per_sec
+        self.wiggle_w_pitch = 4.0 * per_sec
         self.prev_wiggle_time = time.perf_counter()
         self.axes_aligned = False
         self.axes_aligned_cntr = 0
@@ -57,13 +58,14 @@ class FSM:
         # Yaw align
         self.align_axes = False
         # self.yaw_algn_kp = 0.144
-        self.yaw_algn_kp = 0.2
-        self.yaw_algn_thresh = 0.025
+        self.yaw_algn_kp = 0.8
+        self.yaw_algn_thresh = 0.01
         self.yaw_aligned = False
 
         # Pitch align
-        self.pitch_algn_kp = 0.144
-        self.pitch_algn_thresh = 0.03
+        # self.pitch_algn_kp = 0.144
+        self.pitch_algn_kp = 0.4
+        self.pitch_algn_thresh = 0.01
         self.pitch_aligned = False
 
         # Force/torque
@@ -73,12 +75,10 @@ class FSM:
         self.alpha_ft_ema = 0.002
         self.ft_feeling_sum = np.zeros((1, 6))
         self.ft_feeling = np.zeros(6)
-        # self.track_fz = np.zeros(1)
-        self.track_fz = 0.0
 
         self.thresh = {
             "fx": 0.1,  # threshold for force in x direction
-            "fz": -0.3,  # threshold for force in z direction
+            "fz": -0.2,  # threshold for force in z direction
             "fy": 0.1,  # threshold for force in y direction
             "tx": 0.1,  # threshold for torque in x direction
             "ty": 0.1,  # threshold for torque in y direction
@@ -96,9 +96,6 @@ class FSM:
         match self.state:
             case "start":
                 self.controller.reset_home_pos()
-                # self.state = 'find_object'
-                # self.state = 'test'
-                # self.state = 'do_wiggle'
                 self.state = "do_initial_pos"
 
             case "do_initial_pos":
@@ -106,34 +103,31 @@ class FSM:
 
             case "open_gripper":
                 self.state_open_gripper()
-                # self.state = 'test'
-
-            case "test":
-                self.state_test()
-                # self.test_wiggle()
 
             case "interact_perceive":
                 self.state_interact_perceive()
+                
+            case "done":
+                pass
 
             case _:
                 pass
 
     # -----------------------------------------------------------------------------------------------------------
-    def state_test(self) -> None:
-        self.controller.mode = "velocity"
-        # self.test_pitch()
-
-    # -----------------------------------------------------------------------------------------------------------
     def state_initial_pos(self) -> None:
         self.controller.mode = "velocity"
-        desired_pos = [self.initial_x, self.initial_y, self.initial_z]
-        desired_euler_radians = [0, 90.0 * math.pi / 180.0, 0]
+        # desired_pos = [self.initial_x, self.initial_y, self.initial_z]
+        # desired_euler_radians = [0, 90.0 * math.pi / 180.0, 0]
+        # desired_euler_radians = [0, 100.0 * math.pi / 180.0, 0]
+        desired_pos = [self.initial_x, self.initial_y, self.initial_z + 0.05]
+        # desired_euler_radians = [0, 75.0 * math.pi / 180.0, 0]
+        desired_euler_radians = [15.0 * math.pi / 180.0, 75.0 * math.pi / 180.0, 15.0 * math.pi / 180.0]
 
         self.controller.do_move_pos(pos=desired_pos, euler_rad=desired_euler_radians)
 
         pos_err, ang_err = self.controller.get_pos_error(desired_pos=desired_pos, desired_euler_radians=desired_euler_radians)
 
-        if any(abs(x) > 0.02 for x in pos_err) or any(abs(x) > 0.12 for x in ang_err):
+        if any(abs(x) > 0.02 for x in pos_err) or any(abs(x) > 0.15 for x in ang_err):
             return
         else:
             print(f"Reached initial pose, position err: {pos_err}, angular err: {ang_err}")
@@ -145,7 +139,6 @@ class FSM:
         if self.controller.check_gripper_pos() is True:
             print(f"Gripper opened")
             self.state = "interact_perceive"
-            # self.state = 'test'
         else:
             print(f"Waiting for gripper to open ...")
             self.controller.open_gripper()
@@ -164,36 +157,39 @@ class FSM:
         twist_grab = np.zeros(6)
 
         # First, wiggle to align pitch and yaw with the object
-        if not self.axes_aligned:
-            # if self.is_touching or self.doing_wiggle:
-            if self.touched_once:
-                # twist_wiggle = self.do_wiggle()
+        if not self.axes_aligned and (self.is_touching or self.doing_wiggle):
+            twist_wiggle = self.do_wiggle()
+            
+            # Max samples for feeling force should be wiggle samples * wiggle_max
+            # Only start aligning once we have enough samples
+            self.ft_feeling_sum = np.append(self.ft_feeling_sum, self.ft_ema.reshape(1, 6), axis=0)
+            if self.ft_feeling_sum.shape[0] >= (self.wiggle_samples * self.wiggle_max):
+                self.ft_feeling_sum = self.ft_feeling_sum[1:]
+            
+            self.ft_contact_sum = np.append(self.ft_contact_sum, self.ft_contact_wrist.reshape(1, 6), axis=0)
+            if self.ft_contact_sum.shape[0] >= (self.wiggle_samples * self.wiggle_max):
+                self.ft_contact_sum = self.ft_contact_sum[1:]
                 
-                # Max samples for feeling force should be wiggle samples * wiggle_max
-                # Only start aligning once we have enough samples
-                self.ft_feeling_sum = np.append(self.ft_feeling_sum, self.ft_ema.reshape(1, 6), axis=0)
-                if self.ft_feeling_sum.shape[0] >= (self.wiggle_samples * self.wiggle_max):
-                    self.ft_feeling_sum = self.ft_feeling_sum[1:]
-                
-                self.ft_contact_sum = np.append(self.ft_contact_sum, self.ft_contact_wrist.reshape(1, 6), axis=0)
-                if self.ft_contact_sum.shape[0] >= (self.wiggle_samples * self.wiggle_max):
-                    self.ft_contact_sum = self.ft_contact_sum[1:]
-                    
-                self.ft_ema = np.average(self.ft_contact_sum, axis=0)
-                self.controller.ft_ema = self.ft_ema.tolist()
-                
-                if self.align_axes:
-                    # twist_yaw = self.do_align_yaw()
-                    # twist_pitch = self.do_align_pitch()
-                    pass
+            self.ft_ema = np.average(self.ft_contact_sum, axis=0)
+            self.controller.ft_ema = self.ft_ema.tolist()
+            
+            if self.align_axes:
+                twist_yaw = self.do_align_yaw()
+                twist_pitch = self.do_align_pitch()
+                pass
 
         # Next, move in the Y direction
-        else:
-            # twist_grab = self.do_align_y()
-            pass
-        
-        # if self.is_touching:
-        #     twist_yaw = self.do_align_yaw()
+        if self.axes_aligned:
+            relative_pos, relative_quat = self.controller.get_relative_pos(self.align_pos_world_frame, self.align_quat_world_frame)
+            print(f"DEBUG relative pos: {[f"{x:.3f}" for x in relative_pos]}")
+            if abs(relative_pos[1]) > 0.08 or abs(relative_pos[2]) > 0.04:
+                self.done = True
+                self.state = "done"
+                self.controller.do_move_velocity(v_des=[0, 0, 0], w_des=[0, 0, 0], link="wrist", world_frame=False)
+                print("DEBUG reached max movement")
+                return
+            if self.ft_contact_wrist[fz] < -0.05:
+                twist_grab = self.do_align_y()
 
         # Sum up all the speed components
         speed_total = twist_contact + twist_wiggle + twist_yaw + twist_pitch + twist_grab
@@ -206,28 +202,20 @@ class FSM:
 
     # -----------------------------------------------------------------------------------------------------------
     def do_keep_contact(self) -> np.ndarray:
-        # if len(self.track_fz) > 20:
-        #     self.track_fz = np.append(self.track_fz, self.ft_contact_wrist[fz])
-        #     self.track_fz = self.track_fz[1:]
-        # alpha = 0.9
-        # self.track_fz = alpha * self.track_fz + (1 - alpha) * self.ft_contact_wrist[fz]
-
-        if self.ft_contact_wrist[fz] < self.thresh["fz"]:
-        # if self.track_fz < self.thresh["fz"]:
-        # if np.average(self.track_fz) < self.thresh["fz"]:
+        # small offset so if we are just under, it's still "touching"
+        if self.ft_contact_wrist[fz] <= self.thresh["fz"] + 0.1:
             self.is_touching = True
             if not self.touched_once:
                 self.touched_once = True
         else:
             self.is_touching = False
 
-        kp = self.forward_kp_initial if not self.touched_once else self.forward_kp
-        force_diff = self.ft_contact_wrist[fz] - self.thresh["fz"]
-        # force_diff = self.track_fz - self.thresh["fz"]
+        if not self.touched_once and not self.axes_aligned:
+            kp = self.forward_kp_initial
+        else:
+            kp = self.forward_kp
 
-        # if abs(force_diff) < 0.01:
-        #     speed = 0
-        # else:
+        force_diff = self.ft_contact_wrist[fz] - self.thresh["fz"]
         speed = kp * force_diff
         
         v_ee = [0, 0, speed]
@@ -244,18 +232,14 @@ class FSM:
             
             if self.wiggle_total_cntr > self.wiggle_samples:
                 self.yaw_aligned = True if abs(self.ft_ema[fy]) <= self.yaw_algn_thresh else False
-                # fy_avg = np.average(self.ft_feeling_sum[:, fy])
-                # self.yaw_aligned = True if abs(fy_avg) <= self.yaw_algn_thresh else False
+
                 self.pitch_aligned = True if abs(self.ft_ema[fx]) <= self.pitch_algn_thresh else False
-                # fx_avg = np.average(self.ft_feeling_sum[:, fx])
-                # self.pitch_aligned = True if abs(fx_avg) <= self.pitch_algn_thresh else False
-                # print(f"DEBUG: WIGGLE yaw avg: {fy_avg}, yaw aligned: {self.yaw_aligned}, pitch avg: {fx_avg}, pitch aligned: {self.pitch_aligned}")
                 print(f"DEBUG: WIGGLE yaw ema: {self.ft_ema[fy]}, yaw aligned: {self.yaw_aligned}, pitch ema: {self.ft_ema[fx]}, pitch aligned: {self.pitch_aligned}")
 
                 if self.yaw_aligned and self.pitch_aligned:
                     self.axes_aligned_cntr += 1
                     print(f"DEBUG: WIGGLE axes aligned counter: {self.axes_aligned_cntr}")
-                    if self.axes_aligned_cntr >= 5:
+                    if self.axes_aligned_cntr >= 3:
                         print("Both axes aligned, stopping wiggle")
                         self.align_pos_world_frame, self.align_quat_world_frame = self.controller.get_wrist_pos()
                         self.doing_wiggle = False
@@ -296,13 +280,8 @@ class FSM:
 
     # -----------------------------------------------------------------------------------------------------------
     def do_align_yaw(self) -> np.ndarray:
-        # if self.yaw_aligned:
-        #     return np.zeros(6)
-        # else:
-        #     yaw_speed = self.yaw_algn_kp * self.ft_ema[fy]
-        #     # yaw_speed = 0.02
         yaw_speed = self.yaw_algn_kp * self.ft_ema[fy]
-        max_yaw_speed = 0.1
+        max_yaw_speed = 0.2
         if abs(yaw_speed) > max_yaw_speed:
             yaw_speed = np.sign(yaw_speed) * max_yaw_speed
 
@@ -335,7 +314,7 @@ class FSM:
         # else:
         #     pitch_speed = self.pitch_algn_kp * self.ft_ema[fx] * -1.0
         pitch_speed = self.pitch_algn_kp * self.ft_ema[fx] * -1
-        max_pitch_speed = 0.1
+        max_pitch_speed = 0.2
         if abs(pitch_speed) > max_pitch_speed:
             pitch_speed = np.sign(pitch_speed) * max_pitch_speed
 
@@ -356,8 +335,7 @@ class FSM:
     # -----------------------------------------------------------------------------------------------------------
     def do_align_y(self) -> np.ndarray:
         twist_y = np.zeros(6)
-        # get start position and track distance in z
-
+        
         # speed based on which finger, inside or outside
         if self.ft_ema[tx] > 0:
             y_dir = -1 # go right

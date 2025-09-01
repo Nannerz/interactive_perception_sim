@@ -349,7 +349,8 @@ class Controller(threading.Thread):
     # -----------------------------------------------------------------------------------------------------------
     def get_pos_error(self, desired_pos, desired_euler_radians):
         with self.sim_lock:
-            ee_pos, ee_quat = p.getLinkState(self.robot, self.ee_link_index)[:2]
+            ls = p.getLinkState(self.robot, self.ee_link_index)
+            ee_pos, ee_quat = ls[4], ls[5]
             
             desired_quat = p.getQuaternionFromEuler(desired_euler_radians)
             quat_error = p.getDifferenceQuaternion(ee_quat, desired_quat)
@@ -421,24 +422,20 @@ class Controller(threading.Thread):
     # -----------------------------------------------------------------------------------------------------------
     def get_wrist_pos(self):
         with self.sim_lock:
-            wrist_pos, wrist_quat = p.getLinkState(self.robot, self.wrist_idx)[:2]
+            ls = p.getLinkState(self.robot, self.wrist_idx)
+            wrist_pos, wrist_quat = ls[4], ls[5]
             wrist_pos = np.array(wrist_pos)
             wrist_quat = np.array(wrist_quat)
 
         return wrist_pos, wrist_quat
+    
     # -----------------------------------------------------------------------------------------------------------
-    # def calc_spin_around(self, w_des, right_finger = True):
-    #     w_des_local = np.array(w_des)
-
-    #     right_tip_pos_wrist, left_tip_pos_wrist = self.get_fingertip_pos_wrist_frame()
-    #     r = right_tip_pos_wrist if right_finger else left_tip_pos_wrist
-    #     r = np.array(r)
-
-    #     v_des_local = -np.cross(w_des_local, r)
-    #     print(f"r: {r}")
-    #     print(f"spin around v_des: {v_des_local}, w_des: {w_des_local}")
-
-    #     self.do_move_velocity(v_des=v_des_local.tolist(), w_des=w_des_local.tolist(), link='wrist', wf=False)
+    def get_relative_pos(self, pos_wf, quat_wf):
+        cur_pos, cur_quat = self.get_wrist_pos()
+        inv_pos, inv_quat = p.invertTransform(pos_wf, quat_wf)
+        relative_pos, relative_quat = p.multiplyTransforms(inv_pos, inv_quat, cur_pos, cur_quat)
+        return relative_pos, relative_quat
+    
     # -----------------------------------------------------------------------------------------------------------
     def do_move_velocity(self, v_des, w_des, link="wrist", world_frame=False) -> None:
         if link == "wrist":
@@ -462,65 +459,6 @@ class Controller(threading.Thread):
         else:
             v_world_frame = R_wrist2world.dot(np.array(v_des))
             w_world_frame = R_wrist2world.dot(np.array(w_des))
-            
-        # print(f"DEBUG desired v: {[f"{s:.6f}" for s in v_world_frame]}, w: {[f"{s:.6f}" for s in w_world_frame]}")
-        
-        # # Position feedback
-        # # feedback_clip = 1/5
-        # feedback_clip = 1
-        # pos_err = np.zeros(3)
-        # if link == 'wrist':
-        #     pos_err = self.desired_pos_wrist - np.array(cur_pos_world_frame)
-        #     self.desired_pos_wrist = self.desired_pos_wrist + np.array(v_world_frame) * self.interval
-        # else:
-        #     pos_err = self.desired_pos_ee - np.array(cur_pos_world_frame)
-        #     self.desired_pos_ee = self.desired_pos_ee + np.array(v_world_frame) * self.interval
-
-        # Kp_lin = 0.08
-        # v_correct = Kp_lin * pos_err
-        # # np.clip(v_correct, -np.abs(v_world_frame * feedback_clip), np.abs(v_world_frame * feedback_clip), out=v_correct)
-        # v_world_frame = v_world_frame + v_correct
-
-        # # Rotational feedback
-        # if link == 'wrist':
-        #     prev_quat = self.desired_quat_wrist
-        # else:
-        #     prev_quat = self.desired_quat_ee
-
-        # if np.linalg.norm(w_world_frame) > 1e-6:
-        #     axis_w = w_world_frame / np.linalg.norm(w_world_frame)
-        #     angle_w = np.linalg.norm(w_world_frame) * self.interval
-        #     delta_quat = p.getQuaternionFromAxisAngle(axis_w.tolist(), angle_w)
-        #     desired_quat = p.multiplyTransforms([0,0,0], delta_quat, [0,0,0], prev_quat)[1]
-        # else:
-        #     desired_quat = prev_quat
-
-        # # normalize and store desired quaternion
-        # desired_quat = np.array(desired_quat)
-        # desired_quat /= np.linalg.norm(desired_quat)
-        # if link == 'wrist':
-        #     self.desired_quat_wrist = desired_quat.tolist()
-        # else:
-        #     self.desired_quat_ee = desired_quat.tolist()
-
-        # # compute error quaternion and corrective angular velocity
-        # quat_error = p.getDifferenceQuaternion(cur_quat_world_frame, desired_quat)
-        # axis_err, angle_err = p.getAxisAngleFromQuaternion(quat_error)
-        # if angle_err > np.pi:
-        #     angle_err -= 2 * np.pi
-        # elif angle_err < -np.pi:
-        #     angle_err += 2 * np.pi
-
-        # Kp_ang = 0.14
-        # if abs(angle_err) < 1e-6 or np.linalg.norm(axis_err) < 1e-6:
-        #     w_correction = np.zeros(3)
-        # else:
-        #     axis_n = np.array(axis_err) / np.linalg.norm(axis_err)
-        #     w_correction = axis_n * (angle_err * Kp_ang)
-
-        # # total commanded angular velocity
-        # # np.clip(w_correction, -np.abs(w_world_frame * feedback_clip), np.abs(w_world_frame * feedback_clip), out=w_correction)
-        # w_world_frame = w_world_frame + w_correction
 
         self.speed_world_frame = np.hstack((v_world_frame, w_world_frame))
         

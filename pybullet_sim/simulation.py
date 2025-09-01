@@ -54,9 +54,9 @@ class Simulation:
                                  # contactDamping=0.5,
                                  contactDamping=0.7,
                                 #  collisionMargin=0.0005,
-                                 lateralFriction=0.2,
+                                 lateralFriction=0.6,
                                 #  rollingFriction=0.0005,
-                                 spinningFriction=0.2)
+                                 spinningFriction=0.6)
                 dyn = p.getDynamicsInfo(self.robot, link)
                 print(f"Link {link} dynamics: {dyn}")
             num_joints = p.getNumJoints(self.robot)
@@ -80,6 +80,7 @@ class Simulation:
         elif myobj == "pringles_can":
             base_orn = [0, 0, 0]
             base_pos = [0.8, 0.045, 0.03]
+            # base_pos = [0.8, 0.06, 0.03]
             self.obj = self.create_pringles_can(flags, base_orn=base_orn, base_pos=base_pos)
         elif myobj == "cracker_box":
             # base_orn = [0, 0, 75 * math.pi / 180]
