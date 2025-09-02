@@ -1,14 +1,13 @@
-import pybullet as p
-import pybullet_data
+import pybullet as p # type: ignore
+import pybullet_data # type: ignore
 import sys
 import threading
 import os
-import math
-from pybullet_object_models import ycb_objects
+from pybullet_object_models import ycb_objects # type: ignore
+from typing import Any
+p: Any = p
 
 # -----------------------------------------------------------------------------------------------------------
-
-
 class Simulation:
     def __init__(self) -> None:
         self.robot = None
@@ -18,7 +17,7 @@ class Simulation:
         self.obj = None
 
     # -----------------------------------------------------------------------------------------------------------
-    def init_sim(self) -> None:
+    def init_sim(self, sim_obj: dict[str, Any]) -> None:
         with self.sim_lock:
             p.connect(p.GUI)
             p.setAdditionalSearchPath(pybullet_data.getDataPath())
@@ -63,36 +62,24 @@ class Simulation:
             for i in range(0, num_joints):
                 p.enableJointForceTorqueSensor(self.robot, i, 1)
 
-        self.create_object()
+        self.create_object(sim_obj)
 
     # -----------------------------------------------------------------------------------------------------------
-    def create_object(self) -> None:
+    def create_object(self, sim_obj: dict[str, Any]) -> None:
         flags = p.URDF_USE_INERTIA_FROM_FILE
-
-        myobj = "cracker_box"
-        # myobj = "mustard_bottle"
-        # myobj = "pringles_can"
-
-        if myobj == "mustard_bottle":
-            base_orn = [0, 0, 20 * math.pi / 180]
-            base_pos = [0.8, 0.04, 0.09]
-            self.obj = self.create_mustard_bottle(flags, base_orn=base_orn, base_pos=base_pos)
-        elif myobj == "pringles_can":
-            base_orn = [0, 0, 0]
-            base_pos = [0.8, 0.045, 0.03]
-            # base_pos = [0.8, 0.06, 0.03]
-            self.obj = self.create_pringles_can(flags, base_orn=base_orn, base_pos=base_pos)
-        elif myobj == "cracker_box":
-            # base_orn = [0, 0, 75 * math.pi / 180]
-            # base_pos = [0.8, 0.025, 0.11]
-            base_orn = [0, 0, 105 * math.pi / 180]
-            base_pos = [0.8, 0.055, 0.11]
-            # base_orn = [0, 0, 90 * math.pi / 180]
-            # base_pos = [0.8, 0.04, 0.11]
-            self.obj = self.create_cracker_box(flags, base_orn=base_orn, base_pos=base_pos)
+        match sim_obj['name']:
+            case "mustard_bottle":
+                self.obj = self.create_mustard_bottle(flags, base_orn=sim_obj['orn'], base_pos=sim_obj['pos'])
+            case "pringles_can":
+                self.obj = self.create_pringles_can(flags, base_orn=sim_obj['orn'], base_pos=sim_obj['pos'])
+            case "cracker_box":
+                self.obj = self.create_cracker_box(flags, base_orn=sim_obj['orn'], base_pos=sim_obj['pos'])
+            case _:
+                print("ERROR: Unknown object, exiting")
+                sys.exit(1)
 
     # -----------------------------------------------------------------------------------------------------------
-    def create_mustard_bottle(self, flags, base_orn=[0, 0, 20 * math.pi / 180], base_pos=[0.8, 0.065, 0.08]) -> int:
+    def create_mustard_bottle(self, flags: int, base_orn: list[float], base_pos: list[float]) -> int:
 
         base_quat = p.getQuaternionFromEuler(base_orn)
         obj = p.loadURDF(
@@ -114,7 +101,7 @@ class Simulation:
         return obj
 
     # -----------------------------------------------------------------------------------------------------------
-    def create_pringles_can(self, flags, base_orn=[0, 0, 20 * math.pi / 180], base_pos=[0.8, 0.065, 0.08]) -> int:
+    def create_pringles_can(self, flags: int, base_orn: list[float], base_pos: list[float]) -> int:
 
         base_quat = p.getQuaternionFromEuler(base_orn)
         obj = p.loadURDF(
@@ -134,7 +121,7 @@ class Simulation:
         return obj
 
     # -----------------------------------------------------------------------------------------------------------
-    def create_cracker_box(self, flags, base_orn=[0, 0, 20 * math.pi / 180], base_pos=[0.8, 0.065, 0.08]) -> int:
+    def create_cracker_box(self, flags: int, base_orn: list[float], base_pos: list[float]) -> int:
 
         base_quat = p.getQuaternionFromEuler(base_orn)
         obj = p.loadURDF(

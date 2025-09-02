@@ -1,8 +1,12 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+from matplotlib.lines import Line2D
 import numpy as np
 import os, csv
+
+from typing import Any
+plt: Any = plt
 # -----------------------------------------------------------------------------------------------------------
 class FTPlotter():
     def __init__(self) -> None:
@@ -12,14 +16,14 @@ class FTPlotter():
             raise FileNotFoundError(f"CSV file not found: {self.csv_file}")
 
         self.data_map = self.get_data_map()
-        self.max_samples = 10000
+        self.max_samples = 5000
 # -----------------------------------------------------------------------------------------------------------
-    def get_data_map(self) -> list:
+    def get_data_map(self) -> dict[str, dict[str, float]]:
         with open(self.csv_file, newline='') as f:
             reader = csv.reader(f)
             header = next(reader)
 
-        data_map = {}
+        data_map: dict[str, dict[str, float]] = {}
         for col in header:
             if '_' in col:
                 data_type, name = col.split('_', 1)
@@ -31,7 +35,7 @@ class FTPlotter():
 # -----------------------------------------------------------------------------------------------------------
     def run(self) -> None:
         fig, axes = plt.subplots(len(self.data_map), 1, sharex=True, figsize=(8, 12))
-        lines = {}  # (id, type) -> Line2D object
+        lines: dict[tuple[str, str], Line2D] = {}  # (id, type) -> Line2D object
         if len(self.data_map) == 1:
             axes = [axes]
         
@@ -43,18 +47,21 @@ class FTPlotter():
                 lines[(name, val)] = line
             ax.legend(loc="upper right")
             ax.set_ylabel(".")
+            # ylims = 0.3
+            # ax.set_ylim([-ylims, ylims])
+            # ax.set_xlim([0, self.max_samples])
 
         axes[-1].set_xlabel(".")
 
-        def animate(frame):
+        def animate(frame: int) -> list[Any]:
             # read previous max_samples data & update plots
-            df = pd.read_csv(self.csv_file).tail(self.max_samples)
+            df = pd.read_csv(self.csv_file).tail(self.max_samples) # type: ignore
             x = np.arange(len(df), dtype=float)
                     
             for i, name in enumerate(self.data_map):
                 for val in self.data_map[name]:
                     line = lines[(name, val)]
-                    y = df[f"{val}_{name}"].to_numpy(dtype=float)
+                    y: np.ndarray[Any, Any] = df[f"{val}_{name}"].to_numpy(dtype=float) # type: ignore
                     line.set_data(x, y)
 
                 ax = axes[i]
@@ -63,7 +70,7 @@ class FTPlotter():
 
             return list(lines.values())
 
-        ani = animation.FuncAnimation(
+        ani = animation.FuncAnimation( # type: ignore
             fig,
             animate,
             interval=500,
