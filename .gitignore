@@ -8,8 +8,7 @@ vel_data.csv
 pos.json
 test.py
 make_*.py
-pybullet-object-models
 mujoco*
 uninstall.txt
 mjc*
-pybullet_sim/data
+data

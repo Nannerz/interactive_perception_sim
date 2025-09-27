@@ -10,7 +10,7 @@ plt: Any = plt
 # -----------------------------------------------------------------------------------------------------------
 class FTPlotter():
     def __init__(self) -> None:
-        self.data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+        self.data_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
         self.csv_file = os.path.join(self.data_path, "ft_data.csv")
         if not os.path.exists(self.csv_file):
             raise FileNotFoundError(f"CSV file not found: {self.csv_file}")
@@ -47,9 +47,9 @@ class FTPlotter():
                 lines[(name, val)] = line
             ax.legend(loc="upper right")
             ax.set_ylabel(".")
-            # ylims = 0.3
+            # ylims = 0.02
             # ax.set_ylim([-ylims, ylims])
-            # ax.set_xlim([0, self.max_samples])
+            ax.set_xlim([0, self.max_samples])
 
         axes[-1].set_xlabel(".")
 

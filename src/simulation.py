@@ -12,7 +12,6 @@ class Simulation:
     def __init__(self) -> None:
         self.robot = None
         self.sim_lock = threading.Lock()
-        self.path = os.path.dirname(os.path.abspath(__file__))
         self.gravity = -9.81
         self.obj = None
 
@@ -38,8 +37,6 @@ class Simulation:
                                          cameraTargetPosition=[0.5, 0, 0.2])
             p.loadURDF("plane.urdf")  # ground plane
 
-            # urdf_dir = os.path.join(self.path, "panda_no_gripper.urdf")
-            # self.robot = p.loadURDF(urdf_dir,
             self.robot = p.loadURDF("franka_panda/panda.urdf",
                                     basePosition=[0, 0, 0],
                                     baseOrientation=p.getQuaternionFromEuler([0, 0, 0]),
@@ -53,11 +50,10 @@ class Simulation:
                                  # contactDamping=0.5,
                                  contactDamping=0.7,
                                 #  collisionMargin=0.0005,
-                                 lateralFriction=0.6,
+                                 lateralFriction=0.7,
                                 #  rollingFriction=0.0005,
-                                 spinningFriction=0.6)
-                dyn = p.getDynamicsInfo(self.robot, link)
-                print(f"Link {link} dynamics: {dyn}")
+                                 spinningFriction=0.7)
+
             num_joints = p.getNumJoints(self.robot)
             for i in range(0, num_joints):
                 p.enableJointForceTorqueSensor(self.robot, i, 1)
@@ -111,13 +107,14 @@ class Simulation:
             flags=flags)
 
         p.changeDynamics(bodyUniqueId=obj, linkIndex=-1,
-                         # contactStiffness=1e4,
-                         contactStiffness=6e4,
+                         # contactStiffness=9e4,
+                         contactStiffness=9e4,
                          # contactStiffness=1e4,
                          # contactDamping=0.5,
-                         contactDamping=0.5,
+                         contactDamping=0.9,
                          lateralFriction=0.35,
-                         spinningFriction=0.35,)
+                         spinningFriction=0.35,
+                         mass=1.0)
         return obj
 
     # -----------------------------------------------------------------------------------------------------------
