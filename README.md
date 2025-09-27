@@ -1,8 +1,9 @@
 This code was created/tested with Python 3.12.1
 
-The custom panda_with_sensor.urdf is just a copy of the pre-made panda.urd file from pybullet
-The default can be found under the python install in: .venv\Lib\site-packages\pybullet_data\franka_panda
+Franka panda model/object files can be found in the python venv: .venv\Lib\site-packages\pybullet_data\franka_panda
 
-For this project to work, I made a symlink from the meshes folder to the base of the project
-ln -sf .venv\Lib\site-packages\pybullet_data\franka_panda\meshes meshes
-(Note that is a linux command with a windows path. Use git bash on windows with "/" instead of "\", or use the mklink command in cmd)
+
+First install the requirements, "pip install -r requirements.txt"
+Then run with: "python src\main.py <desired_scenario>".
+
+If a scenario is not given, a list of available scenarios is displayed "python src\main.py"
