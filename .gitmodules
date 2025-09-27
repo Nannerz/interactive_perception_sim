@@ -1,0 +1,3 @@
+[submodule "pybullet-object-models"]
+	path = pybullet-object-models
+	url = https://github.com/eleramp/pybullet-object-models.git
