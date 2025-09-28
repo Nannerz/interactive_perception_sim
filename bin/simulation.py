@@ -25,11 +25,16 @@ class Simulation:
             p.setRealTimeSimulation(1)
             p.setTimeStep(0.5/1000.0)
             p.setPhysicsEngineParameter(
-                numSolverIterations=150,
+                numSolverIterations=50,
                 solverResidualThreshold=1e-9,
-                frictionERP=0.10,  # smoother stick/slip
+                numSubSteps=3,
+                frictionERP=0.40, # higher value = more friction
+                contactERP=0.10,
+                allowedCcdPenetration=0.001,
+                # warmStartingFactor=0.95,
+                contactBreakingThreshold=0.02,
                 useSplitImpulse=1,
-                splitImpulsePenetrationThreshold=0.0005,
+                splitImpulsePenetrationThreshold=0.001,
             )
             p.resetDebugVisualizerCamera(cameraDistance=1.2,
                                          cameraYaw=50,
@@ -106,14 +111,23 @@ class Simulation:
             baseOrientation=base_quat,
             flags=flags)
 
+        # p.changeDynamics(bodyUniqueId=obj, linkIndex=-1,
+        #                  # contactStiffness=9e4,
+        #                  contactStiffness=9e4,
+        #                  # contactStiffness=1e4,
+        #                  # contactDamping=0.5,
+        #                  contactDamping=0.9,
+        #                  lateralFriction=0.35,
+        #                  spinningFriction=0.35,
+        #                  mass=1.0)
         p.changeDynamics(bodyUniqueId=obj, linkIndex=-1,
-                         # contactStiffness=9e4,
-                         contactStiffness=9e4,
-                         # contactStiffness=1e4,
-                         # contactDamping=0.5,
+                         contactStiffness=2e4,
                          contactDamping=0.9,
+                         linearDamping=0.5,
+                         angularDamping=0.8,
                          lateralFriction=0.35,
                          spinningFriction=0.35,
+                         rollingFriction=0.01,
                          mass=1.0)
         return obj
 

@@ -16,6 +16,7 @@ class FTPlotter():
             raise FileNotFoundError(f"CSV file not found: {self.csv_file}")
 
         self.data_map = self.get_data_map()
+        self.interval = 0.005 # 5ms
         self.max_samples = 5000
 # -----------------------------------------------------------------------------------------------------------
     def get_data_map(self) -> dict[str, dict[str, float]]:
@@ -47,16 +48,17 @@ class FTPlotter():
                 lines[(name, val)] = line
             ax.legend(loc="upper right")
             ax.set_ylabel(".")
+            # ax.set_xlabel("Time (s)")
             # ylims = 0.02
             # ax.set_ylim([-ylims, ylims])
-            ax.set_xlim([0, self.max_samples])
+            ax.set_xlim([0, self.max_samples * self.interval])
 
-        axes[-1].set_xlabel(".")
+        axes[-1].set_xlabel("Time (s)")
 
         def animate(frame: int) -> list[Any]:
             # read previous max_samples data & update plots
             df = pd.read_csv(self.csv_file).tail(self.max_samples) # type: ignore
-            x = np.arange(len(df), dtype=float)
+            x = np.arange(len(df), dtype=float) * self.interval
                     
             for i, name in enumerate(self.data_map):
                 for val in self.data_map[name]:

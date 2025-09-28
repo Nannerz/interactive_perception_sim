@@ -39,7 +39,8 @@ class Controller(threading.Thread):
         self.interval = 0.005 # 5ms
         self.thread_cntr = 0
         self.thread_cntr_max = 5/self.interval
-        self.timers: dict[str, list[float]] = defaultdict(list[float])
+        self.timers: dict[str, float] = defaultdict(float)
+        self.fsm_timers: dict[str, float] = {}
         self.loop_timers: dict[str, float] = {}
         self.initial_pos = np.array(initial_robot_conf["pos"])
         self.fsm = FSM(
@@ -425,17 +426,6 @@ class Controller(threading.Thread):
         right_tip_pos_world = (pos_wrist_world + R_wrist2world @ right_tip_in_wrist).tolist()
         left_tip_pos_world = (pos_wrist_world + R_wrist2world @ left_tip_in_wrist).tolist()
 
-        # if self.draw_debug:
-        #     end_pos1 = left_tip_pos_world
-        #     linecolor1 = [1, 0, 0]
-        #     kwargs1: dict[str, Any] = {"lineColorRGB": linecolor1, "lineWidth": 5, "lifeTime": 0}
-        #     self.update_debug_line("left_tip", pos_wrist_world, end_pos1, kwargs1)
-
-        #     end_pos2 = right_tip_pos_world
-        #     linecolor2 = [0, 1, 0]
-        #     kwargs2: dict[str, Any] = {"lineColorRGB": linecolor2, "lineWidth": 5, "lifeTime": 0}
-        #     self.update_debug_line("right_tip", pos_wrist_world, end_pos2, kwargs2)
-
         return right_tip_pos_world, left_tip_pos_world
 
     # -----------------------------------------------------------------------------------------------------------
@@ -453,6 +443,21 @@ class Controller(threading.Thread):
         left_tip_in_wrist: list[float] = [finger_height_offset, finger_left_offset, finger_length_offset]
 
         return right_tip_in_wrist, left_tip_in_wrist
+
+    # -----------------------------------------------------------------------------------------------------------
+    def draw_fingertip_debug(self) -> None:
+        """ Draw debug lines from wrist to fingertips """
+        if self.draw_debug:
+            right_tip_pos_world, left_tip_pos_world = self.get_fingertip_pos_world()
+            pos_wrist_world, _ = self.get_pos("wrist")
+
+            linecolor1 = [1, 0, 0]
+            kwargs1: dict[str, Any] = {"lineColorRGB": linecolor1, "lineWidth": 5, "lifeTime": 0}
+            self.update_debug_line("left_tip", pos_wrist_world, np.array(left_tip_pos_world), kwargs1)
+
+            linecolor2 = [0, 1, 0]
+            kwargs2: dict[str, Any] = {"lineColorRGB": linecolor2, "lineWidth": 5, "lifeTime": 0}
+            self.update_debug_line("right_tip", pos_wrist_world, np.array(right_tip_pos_world), kwargs2)
 
     # -----------------------------------------------------------------------------------------------------------
     def get_pos(self, link_name: str) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
@@ -749,8 +754,8 @@ class Controller(threading.Thread):
         
         if line_name in self.debug_lines:
             kwargs["replaceItemUniqueId"] = self.debug_lines[line_name]
-        with self.sim_lock:
-            self.debug_lines[line_name] = p.addUserDebugLine(start_pos, end_pos, **kwargs)
+
+        self.debug_lines[line_name] = p.addUserDebugLine(start_pos, end_pos, **kwargs)
 
     # -----------------------------------------------------------------------------------------------------------
     def toggle_pause_sim(self, pause: bool) -> None:
@@ -767,26 +772,8 @@ class Controller(threading.Thread):
         
         if self.do_timers:
             cur_time = time.perf_counter()
-            self.timers[timer_name].append(cur_time - self.loop_timers["prev_time"])
+            self.timers[timer_name] = cur_time - self.loop_timers["prev_time"]
             self.loop_timers["prev_time"] = cur_time
-
-    # -----------------------------------------------------------------------------------------------------------
-    def timer_stats(self) -> None:
-        """ Collect and print timer stats """
-        
-        elapsed_time = time.perf_counter() - self.loop_timers["thread_start"]
-        if elapsed_time > self.interval:
-            print(f"Controller thread is running slow! Thread time: {elapsed_time:.6f}s") 
-        if self.do_timers:
-            self.thread_cntr += 1
-            self.timers["thread_time"].append(elapsed_time)
-            len_timers = len(next(iter(self.timers.values()))) if self.timers else 0
-
-            if len_timers > self.thread_cntr_max:
-                self.thread_cntr = 0
-                # avgs = [sum(i) / len(i) for i in self.timers.values() if len(i) > 0]
-                # print("Average thread times:", [f"{name}: {v:.6f}s" for name, v in zip(self.timers.keys(), avgs)])
-                self.timers.clear()
 
     # -----------------------------------------------------------------------------------------------------------
     def do_sleep_interval(self) -> None:
@@ -795,27 +782,37 @@ class Controller(threading.Thread):
         If the controller is behind schedule, resets next_thread_time to the current time.
         """
         
-        self.loop_timers["next_thread_time"] += self.interval
-        now = time.perf_counter()
-        sleep_time = self.loop_timers["next_thread_time"] - now
-        self.timers["desired_sleep"].append(sleep_time)
-        if sleep_time > 0:
-            time.sleep(sleep_time)
-            self.timers["actual_sleep"].append(time.perf_counter() - now)
-        else:
-            if not self.pause_sim:
-                print(f"Controller thread is running behind schedule by {-sleep_time:.6f}s")
-                last_vals = list(zip(*self.timers.values()))[-1]
-                print(f"Thread times: ", [f"{name}: {t:.6f}s" for name, t in zip(self.timers.keys(), last_vals)])
-            self.loop_timers["next_thread_time"] = time.perf_counter()
+        sleep_start = time.perf_counter()
+        elapsed_time = sleep_start - self.loop_timers["thread_start"]
+        desired_sleep = self.interval - elapsed_time
 
+        self.timers["thread_time"] = elapsed_time
+        self.timers["desired_sleep"] = desired_sleep
+
+        if elapsed_time > self.interval:
+            if not self.pause_sim:
+                print(f"Controller thread is running slow! Thread time: {elapsed_time:.6f}s, desired sleep: {-desired_sleep:.6f}s")
+                print(f"Thread times: ", [f"{name}: {t:.6f}s" for name, t in self.timers.items()])
+                print(f"Loop timers: ", [f"{name}: {t:.6f}s" for name, t in self.loop_timers.items()])
+                print(f"FSM timers: ", [f"{name}: {t:.6f}s" for name, t in self.fsm_timers.items()])
+            
+            self.loop_timers["next_thread_time"] = time.perf_counter() + self.interval
+        else:
+            while time.perf_counter() < self.loop_timers["next_thread_time"]:
+                time.sleep(1/1000)
+                
+            self.loop_timers["next_thread_time"] += self.interval
+
+        self.timers["actual_sleep"] = time.perf_counter() - sleep_start
+            
     # -----------------------------------------------------------------------------------------------------------
     def run(self) -> None:
         """ Main controller thread loop """
         
-        self.loop_timers["next_thread_time"] = time.perf_counter()
+        self.loop_timers["next_thread_time"] = time.perf_counter() + self.interval
 
         while not self.shutdown_event.is_set():
+            self.timers.clear()
             start_time = time.perf_counter()
             self.loop_timers["thread_start"] = start_time
             self.loop_timers["prev_time"] = start_time
@@ -836,7 +833,7 @@ class Controller(threading.Thread):
                 self.get_contact_ft()
                 self.next_timer("get_contact_ft")
 
-                self.fsm.next_state()
+                self.fsm_timers = self.fsm.next_state()
                 self.next_timer("fsm_next_state")
 
                 match self.mode:
@@ -847,6 +844,8 @@ class Controller(threading.Thread):
                     case _:
                         print("Unknown mode, stopping movement...")
                         self.stop_movement()
+
+                self.draw_fingertip_debug()
                 
                 self.next_timer("apply_next_dq")
                 
@@ -854,7 +853,6 @@ class Controller(threading.Thread):
                 self.write_data_files()
                 self.next_timer("write_data_files")
 
-            self.timer_stats()
             self.do_sleep_interval()
 
         print("Exiting controller thread...")

@@ -1,4 +1,5 @@
-import math
+import math, time
+from collections import defaultdict
 import numpy as np
 from numpy.typing import NDArray
 from typing import TYPE_CHECKING
@@ -29,6 +30,9 @@ class FSM:
         self.initial_orn = initial_orn
 
         self.max_speed = 0.2
+        self.prev_speed = np.zeros(6)
+        self.prev_wiggle = np.zeros(6)
+        self.prev_yaw = np.zeros(6)
 
         # Flags
         self.done = False
@@ -42,8 +46,8 @@ class FSM:
         self.wiggle_dir = 1
         self.wiggles_before_align = 2
         self.wiggle_total_cntr = 0
-        wiggles_per_sec = 1.5
-        wiggle_kp = 900.0
+        wiggles_per_sec = 2.0
+        wiggle_kp = 600.0
         self.wiggle_max = math.ceil(1/self.interval * 1/wiggles_per_sec) + (4 - math.ceil(1/self.interval * 1/wiggles_per_sec) % 4)
         self.wiggle_w_yaw = wiggle_kp/self.wiggle_max * per_sec
         self.wiggle_w_pitch = wiggle_kp/self.wiggle_max * per_sec
@@ -62,17 +66,18 @@ class FSM:
 
         self.kp = {
             "z_initial": 0.09,
-            "z": 0.02,
-            "z_reset": 0.07,
+            "z": 0.03,
+            "grab": 0.12,
             "yaw": 10.5,
             "pitch": 1.8,
         }
 
         self.thresh = {
             "fx": 0.01,  # threshold for force in x direction (pitch algn, unused)
-            "fz": -0.2,  # threshold for force in z direction (touch)
-            "fy": 0.004,  # threshold for force in y direction (yaw algn)
-            "tx": 0.00005,  # threshold for torque in x direction (unused)
+            "fz": -0.15,  # threshold for force in z direction (touch)
+            # "fy": 0.004,  # threshold for force in y direction (yaw algn)
+            "fy": 0.0025,  # threshold for force in y direction (yaw algn)
+            "tx": 0.0005,  # threshold for torque in x direction (unused)
             # "ty": 0.00005,  # threshold for torque in y direction (pitch algn)
             "ty": 0.0005,  # threshold for torque in y direction (pitch algn)
             "tz": 0.00005,  # threshold for torque in z direction (unused)
@@ -87,25 +92,34 @@ class FSM:
         self.max_y = False
 
         self.testcntr = 0
+        self.timers: dict[str, float] = defaultdict(float)
+        self.loop_timers: dict[str, float] = defaultdict(float)
 
     # -----------------------------------------------------------------------------------------------------------
-    def next_state(self) -> None:
+    def next_state(self) -> dict[str, float]:
         """ Finite state machine to determine next control action """
+        self.timers.clear()
+        self.loop_timers["prev_time"] = time.perf_counter()
+        self.next_timer("fsm_top")
         
         match self.state:
             case "start":
                 self.controller.reset_robot_pos()
                 self.state = "do_initial_pos"
+                self.next_timer("state_start")
 
             case "do_initial_pos":
                 self.state_initial_pos()
+                self.next_timer("state_initial_pos")
 
             case "open_gripper":
                 self.state_open_gripper()
+                self.next_timer("state_open_gripper")
 
             case "interact_perceive":
                 self.state_interact_perceive()
-                
+                self.next_timer("state_interact_perceive")
+
             case "done":
                 self.controller.toggle_pause_sim(True)
                 pass
@@ -115,6 +129,16 @@ class FSM:
 
             case _:
                 pass
+
+        return self.timers
+
+    def next_timer(self, timer_name: str) -> None:
+        """ Record incremental time between timer calls """
+        
+        if self.do_timers:
+            cur_time = time.perf_counter()
+            self.timers[timer_name] = cur_time - self.loop_timers["prev_time"]
+            self.loop_timers["prev_time"] = cur_time
 
     def state_test(self) -> None:
         maxcnt = 400
@@ -149,7 +173,7 @@ class FSM:
 
         w_y = np.array([speed * mydir, 0, 0])
         # w_y = np.array([0, 0, 0])
-        r_y = np.array(right_tip)
+        r_y = np.array(left_tip)
         v_y = -np.cross(w_y, r_y)
         
         w_p = np.array([0, speed * mydir, 0])
@@ -266,6 +290,9 @@ class FSM:
         # Apply speed
         self.controller.mode = "velocity"
         self.controller.set_next_dq(v=speed_total[:3], w=speed_total[3:], world_frame=False)
+        self.prev_speed = speed_total.copy()
+        self.prev_wiggle = twist_wiggle.copy()
+        self.prev_yaw = twist_yaw.copy()
 
     # -----------------------------------------------------------------------------------------------------------
     def do_keep_contact(self) -> NDArray[np.float64]:
@@ -278,7 +305,7 @@ class FSM:
 
         # small offset so if we are just under, it's still "touching"
         # if self.ft_contact_wrist[fz] <= self.thresh["fz"] + 0.1:
-        if self.ft_ema[fz] <= -0.05:
+        if self.ft_ema[fz] <= -0.05 and self.ft_ema[fz] > -0.35:
             self.is_touching = True
             if not self.touched_once:
                 self.touched_once = True
@@ -286,9 +313,11 @@ class FSM:
             self.is_touching = False
 
         kp = self.kp["z"]
-        if not self.touched_once or self.aligned["axes"]:
+        if not self.touched_once:
             kp = self.kp["z_initial"]
-
+        elif self.aligned["axes"] and abs(self.ft_ema[tx]) < self.thresh["tx"]:
+            kp = self.kp["grab"]
+            
         # force_diff = self.ft_contact_wrist[fz] - self.thresh["fz"]
         force_diff = self.ft_ema[fz] - self.thresh["fz"]
         speed = kp * force_diff
@@ -378,7 +407,7 @@ class FSM:
         v = -np.cross(w, r)
         twist_yaw = np.concatenate((v, w))
 
-        print(f"DEBUG yaw aligned: {self.aligned["yaw"]}: fy avg/ema/thr: {self.ft_avg[fy]:.6f}/{self.ft_ema[fy]:.6f}/{self.thresh["fy"]:.6f}, tx avg/ema: {self.ft_avg[tx]:.6f}/{self.ft_ema[tx]:.6f}/{self.thresh["tx"]:.6f}, twist: {[f"{x:.6f}" for x in twist_yaw]}, right_finger: {right_finger}")
+        # print(f"DEBUG yaw aligned: {self.aligned["yaw"]}: fy avg/ema/thr: {self.ft_avg[fy]:.6f}/{self.ft_ema[fy]:.6f}/{self.thresh["fy"]:.6f}, tx avg/ema: {self.ft_avg[tx]:.6f}/{self.ft_ema[tx]:.6f}/{self.thresh["tx"]:.6f}, twist: {[f"{x:.6f}" for x in twist_yaw]}, right_finger: {right_finger}")
         return twist_yaw
 
     # -----------------------------------------------------------------------------------------------------------

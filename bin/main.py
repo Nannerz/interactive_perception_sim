@@ -172,7 +172,7 @@ class App:
         controller_thread = Controller(
             sim=sim, 
             shutdown_event=self.shutdown_event, 
-            draw_debug=True, 
+            draw_debug=False, 
             do_timers=True, 
             initial_robot_conf=robot_conf_dict
         )
