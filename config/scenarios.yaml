@@ -24,9 +24,9 @@ robot_confs:
 
 obj_pos:
   mustard:             &pos_mustard              [0.8, 0.04, 0.09]
-  pringles_straight:   &pos_pringles_straight    [0.8, 0.04, 0.03]
-  pringles_left:       &pos_pringles_left        [0.8, 0.06, 0.03]
-  pringles_right:      &pos_pringles_right       [0.8, 0.02, 0.03]
+  pringles_straight:   &pos_pringles_straight    [0.8, 0.03, 0.004]
+  pringles_left:       &pos_pringles_left        [0.8, 0.045, 0.004]
+  pringles_right:      &pos_pringles_right       [0.8, 0.015, 0.004]
   cracker1:            &pos_cracker1             [0.8, 0.025, 0.11]
   cracker2:            &pos_cracker2             [0.8, 0.035, 0.11]
   cracker3:            &pos_cracker3             [0.8, 0.04, 0.11]

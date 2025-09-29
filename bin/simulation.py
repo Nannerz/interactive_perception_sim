@@ -28,13 +28,13 @@ class Simulation:
                 numSolverIterations=50,
                 solverResidualThreshold=1e-9,
                 numSubSteps=3,
-                frictionERP=0.40, # higher value = more friction
-                contactERP=0.10,
-                allowedCcdPenetration=0.001,
+                frictionERP=0.20, # higher value = more friction
+                contactERP=0.20,
+                allowedCcdPenetration=-0.02,
                 # warmStartingFactor=0.95,
-                contactBreakingThreshold=0.02,
+                contactBreakingThreshold=0.05,
                 useSplitImpulse=1,
-                splitImpulsePenetrationThreshold=0.001,
+                splitImpulsePenetrationThreshold=-0.005,
             )
             p.resetDebugVisualizerCamera(cameraDistance=1.2,
                                          cameraYaw=50,
@@ -48,7 +48,8 @@ class Simulation:
                                     useFixedBase=True)
 
             for link in [9, 10]:
-                p.changeDynamics(bodyUniqueId=self.robot, linkIndex=link,
+                p.changeDynamics(bodyUniqueId=self.robot, 
+                                 linkIndex=link,
                                  # contactStiffness=7.5e2,
                                 #  contactStiffness=1e4,
                                  contactStiffness=5e3,
@@ -109,6 +110,7 @@ class Simulation:
             os.path.join(ycb_objects.getDataPath(), "YcbChipsCan", "model.urdf"),
             basePosition=base_pos,
             baseOrientation=base_quat,
+            globalScaling=0.9,
             flags=flags)
 
         # p.changeDynamics(bodyUniqueId=obj, linkIndex=-1,
@@ -120,14 +122,14 @@ class Simulation:
         #                  lateralFriction=0.35,
         #                  spinningFriction=0.35,
         #                  mass=1.0)
-        p.changeDynamics(bodyUniqueId=obj, linkIndex=-1,
-                         contactStiffness=2e4,
-                         contactDamping=0.9,
-                         linearDamping=0.5,
-                         angularDamping=0.8,
-                         lateralFriction=0.35,
-                         spinningFriction=0.35,
-                         rollingFriction=0.01,
+        p.changeDynamics(bodyUniqueId=obj, 
+                         linkIndex=-1,
+                         contactStiffness=3e4,
+                         contactDamping=0.4,
+                        #  linearDamping=0.4,
+                        #  angularDamping=0.4,
+                         lateralFriction=0.15,
+                         spinningFriction=0.15,
                          mass=1.0)
         return obj
 

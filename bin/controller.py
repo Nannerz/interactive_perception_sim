@@ -434,7 +434,7 @@ class Controller(threading.Thread):
         
         finger_height_offset = 0.0
         finger_side_offset = 0.00729
-        finger_length_offset = 0.05840 + 0.05385
+        finger_length_offset = 0.05840 + 0.05385 - 0.005 # offset backwards to keep fingertip touching object
         
         finger_right_offset = -1 * (finger_side_offset + self.movable_joint_states[self.idxs["right"]][0])
         finger_left_offset = (finger_side_offset + self.movable_joint_states[self.idxs["left"]][0])
