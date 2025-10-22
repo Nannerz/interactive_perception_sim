@@ -5,7 +5,7 @@ initial_robot_pos:
   angled_down2:     &pos_angled_down2     [0.6, 0.03, 0.16]    # use with angles down
   straight_low:     &pos_straight_low     [0.6, 0.0, 0.07]      # use with straight
   rollfail:         &pos_rollfail         [0.6, 0.04, 0.11]     # angle up
-  rollsuccess:      &pos_rollsuccess      [0.6, 0.04, 0.10]     # angle up
+  rollsuccess:      &pos_rollsuccess      [0.6, 0.04, 0.17]     # angle up
 
 initial_robot_orn:
   straight:       &orn_straight       !quat [ 0, 0.7071067811865475, 0, 0.7071067811865476 ]        # straight forward in Z direction
@@ -35,7 +35,7 @@ obj_pos:
   cracker2:                 &pos_cracker2                 [0.8, 0.035, 0.11]
   cracker3:                 &pos_cracker3                 [0.8, -0.05, 0.11]
   cracker4:                 &pos_cracker4                 [0.8, 0.05, 0.11]
-  cracker_rollsuccess:      &pos_cracker_rollsuccess      [0.8, 0.03, 0.11]
+  cracker_rollsuccess:      &pos_cracker_rollsuccess      [0.8, 0.008, 0.11]
   meatcan1:                 &pos_meatcan1                 [0.9, 0.05, 0.06]
   tomatocan1:               &pos_tomatocan1               [0.9, 0.05, 0.08]
 
@@ -96,5 +96,5 @@ scenarios:
   tomatocan1:       {robot: *robot_straight_low, sim_obj: *obj_tomatocan1 }
 
   rollfail:         {robot: *robot_rollfail, sim_obj: *obj_cracker4 }  # hand pitched, yawed, and rolled. cracker4 straight ahead flat
-  rollsuccess:      {robot: *robot_rollsuccess, sim_obj: *obj_pringles_rollsuccess }  # hand pitched, yawed, and rolled. pringles2 straight ahead flat
-  # rollsuccess:      {robot: *robot_rollsuccess, sim_obj: *obj_cracker_rollsuccess }  # hand pitched, yawed, and rolled. pringles2 straight ahead flat
+  # rollsuccess:      {robot: *robot_rollsuccess, sim_obj: *obj_pringles_rollsuccess }  # hand pitched, yawed, and rolled. pringles2 straight ahead flat
+  rollsuccess:      {robot: *robot_rollsuccess, sim_obj: *obj_cracker_rollsuccess }  # hand pitched, yawed, and rolled. pringles2 straight ahead flat
