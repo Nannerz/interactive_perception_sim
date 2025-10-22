@@ -54,7 +54,7 @@ class Simulation:
                     bodyUniqueId=self.robot, 
                     linkIndex=link,
                     contactStiffness=15000.0,
-                    contactDamping=1.0,
+                    contactDamping=20.0,
                     lateralFriction=0.7,
                     spinningFriction=0.1
                 )
@@ -107,7 +107,7 @@ class Simulation:
                 objscale = 1.3
                 dynargs = {
                     "contactStiffness": 50000.0,
-                    "contactDamping": 20.0,
+                    "contactDamping": 1.0,
                     "lateralFriction": 0.4,
                     "spinningFriction": 0.1,
                     "mass": 0.3
@@ -116,8 +116,8 @@ class Simulation:
                 objname = "YcbTomatoSoupCan"
                 objscale = 1.0
                 dynargs = {
-                    "contactStiffness": 30000.0,
-                    "contactDamping": 20.0,
+                    "contactStiffness": 50000.0,
+                    "contactDamping": 1.0,
                     "lateralFriction": 0.45,
                     "spinningFriction": 0.1,
                     "mass": 1.0

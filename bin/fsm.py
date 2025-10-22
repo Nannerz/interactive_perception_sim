@@ -31,7 +31,7 @@ class FSM:
         self.initial_orn = initial_orn
         self.no_move = no_move
 
-        self.max_speed = 0.2
+        self.max_speed = 0.15
         self.prev_speed = np.zeros(6)
         self.prev_wiggle = np.zeros(6)
         self.prev_yaw = np.zeros(6)
@@ -49,7 +49,7 @@ class FSM:
         self.wiggles_before_align = 2
         self.wiggle_total_cntr = 0
         wiggles_per_sec = 2.0
-        wiggle_kp = 750.0
+        wiggle_kp = 180.0
         self.wiggle_max = math.ceil(1/self.interval * 1/wiggles_per_sec) + (4 - math.ceil(1/self.interval * 1/wiggles_per_sec) % 4)
         self.wiggle_w_yaw = wiggle_kp/self.wiggle_max * per_sec
         self.wiggle_w_pitch = wiggle_kp/self.wiggle_max * per_sec
@@ -69,27 +69,28 @@ class FSM:
 
         self.kp = {
             "z_initial": 0.8,
-            "z": 0.1,
-            "grab": 0.15,
-            "grab_min": 0.1,
+            "z": 0.11,
+            "grab": 0.3,
+            "grab_min": 0.08,
         }
         self.kp_cur = self.kp["z"]
 
         self.beta = {
-            "aln_y": 65.0,
-            "aln_yaw": 60.0,
-            "aln_pitch": 200.0,
+            "aln_y": 200.0,
+            "aln_yaw": 50.0,
+            "aln_pitch": 320.0,
         }
-        self.recovery_rate = self.interval # 1/200 = 5 ms
+        self.recovery_rate = 1.0/400.0
 
         self.thresh = {
             "fx": 0.01,  # threshold for force in x direction (pitch algn, unused)
-            "fz": -0.13,  # threshold for force in z direction (touch)
+            "fz": -0.09,  # threshold for force in z direction (touch)
             "fz_max": -0.15,  # threshold for force in z direction
-            "fz_min": -0.08,
-            "fy": 0.0018,  # threshold for force in y direction (yaw algn)
-            "ty": 0.002,  # threshold for torque in y direction (pitch algn)
-            "tz": 0.0012,
+            "fz_min": -0.05,
+            "fy": 0.003,  # threshold for force in y direction (yaw algn)
+            "tx": 0.0012,
+            "ty": 0.0002,  # threshold for torque in y direction (pitch algn)
+            "tz": 0.0005,
         }
 
         self.aligned = {
@@ -262,18 +263,13 @@ class FSM:
                 twist_yaw = self.do_align_yaw()
                 twist_pitch = self.do_align_pitch()
 
-
-        if self.aligned["axes"] and not self.check_fz:
-            if self.ft_ema[fz] >= self.thresh["fz"]:
-                self.check_fz = True
-        # Next, move in the Y direction
-        elif self.aligned["axes"]:
+        if self.aligned["axes"]:
 
             self.update_avg_ft()
             relative_pos, relative_angle = self.controller.get_relative_pos(pos_world=self.align_pos_world, quat_world=self.align_quat_world, link_name="wrist")
             
             # End if we reach max Z movement
-            if abs(relative_pos[2]) > 0.035:
+            if abs(relative_pos[2]) > 0.04:
                 print(f"DEBUG reached max movement, relative pos: {[f"{x:.3f}" for x in relative_pos]}")
                 self.done = True
                 self.state = "done"
@@ -291,6 +287,10 @@ class FSM:
             self.tx_sign = np.sign(self.ft_ema[tx])
                 
             if self.max_y or self.tx_flipped:
+            # if (self.max_y or abs(self.ft_ema[tx]) < self.thresh["tx"]) and (self.ft_ema[fz] < self.thresh["fz_min"]):
+            # if (self.max_y or self.tx_flipped) and (self.ft_ema[fz] < self.thresh["fz_min"]):
+            # if (self.max_y or (self.tx_flipped and abs(self.ft_ema[tx]) < self.thresh["tx"])) and (self.ft_ema[fz] < self.thresh["fz_min"]):
+            # if (self.max_y or self.tx_flipped) and (self.ft_ema[fz] < self.thresh["fz_min"]):
                 # End if max roll
                 if ((abs(self.prev_roll_angle) > 150.0) 
                     and (np.sign(self.prev_roll_angle) * np.sign(relative_angle[2])) < 0):
@@ -301,38 +301,23 @@ class FSM:
                     self.controller.set_next_dq(v=np.zeros(3), w=np.zeros(3), world_frame=False)
                     return
                 
-                # if (self.tz_sign * np.sign(self.ft_ema[tz]) < 0
-                #     and abs(self.ft_ema[tz]) < self.thresh["tz"]):
-                if (abs(self.ft_ema[tz]) >= self.thresh["tz"]):
+                # if (self.tz_sign * np.sign(self.ft_ema[tz]) < 0 and abs(self.ft_ema[tz]) < self.thresh["tz"]):
+                
+                # if (abs(self.ft_ema[tz]) >= self.thresh["tz"]):
+                if (self.tz_sign * np.sign(self.ft_ema[tz]) < 0 and self.ft_ema[fz] <= self.thresh["fz"]):
                     print(f"DEBUG tz flipped!")
                     self.tz_flipped = True
-                    self.tx_flipped = False
+                    self.done = True
+                    self.state = "done"
+                    self.controller.set_next_dq(v=np.zeros(3), w=np.zeros(3), world_frame=False)
+                    return
                 else:
                     self.prev_roll_angle = relative_angle[2]
-                    print(f"DEBUG doing roll. Relative pos: {[f"{x:.3f}" for x in relative_pos]}, relative angle: {[f"{x:.3f}" for x in relative_angle]}, prev angle: {self.prev_roll_angle:.3f}, rel angle: {relative_angle[2]:.3f}")
+                    # print(f"DEBUG doing roll. Relative pos: {[f"{x:.3f}" for x in relative_pos]}, relative angle: {[f"{x:.3f}" for x in relative_angle]}, prev angle: {self.prev_roll_angle:.3f}, rel angle: {relative_angle[2]:.3f}")
+                    self.tz_sign = np.sign(self.ft_ema[tz])
                     twist_roll = self.do_align_roll()
                     
-                self.tz_sign = np.sign(self.ft_ema[tz])
-                
-                # if self.tz_sign * np.sign(self.ft_ema[tz]) < 0:
-                #     print(f"DEBUG tz flipped!")
-                #     self.tz_flipped = True
-                #     self.tx_flipped = False
-                #     if not self.max_y:
-                #         twist_grab = self.do_align_y()
-                # else:
-                #     self.tz_sign = np.sign(self.ft_ema[tz])
-                #     if (abs(self.prev_roll_angle) > 150.0) and (np.sign(self.prev_roll_angle) * np.sign(relative_angle[2])) < 0:
-                        
-                #         print(f"DEBUG COULD NOT ALIGN ROLL, stopping. Relative pos: {[f"{x:.3f}" for x in relative_pos]}, relative angle: {[f"{x:.3f}" for x in relative_angle]}, prev angle: {self.prev_roll_angle:.3f}, rel angle: {relative_angle[2]:.3f}")
-                #         self.done = True
-                #         self.state = "done"
-                #         self.controller.set_next_dq(v=np.zeros(3), w=np.zeros(3), world_frame=False)
-                #         return
-                #     else:
-                #         self.prev_roll_angle = relative_angle[2]
-                #         print(f"DEBUG reached max Y movement, doing roll. Relative pos: {[f"{x:.3f}" for x in relative_pos]}, relative angle: {[f"{x:.3f}" for x in relative_angle]}, prev angle: {self.prev_roll_angle:.3f}, rel angle: {relative_angle[2]:.3f}")
-                #         twist_roll = self.do_align_roll()
+                # self.tz_sign = np.sign(self.ft_ema[tz])
             else:
                 twist_grab = self.do_align_y()
 
@@ -388,10 +373,11 @@ class FSM:
                 else:
                     self.kp_cur = self.kp["grab"]
             else:
-                if self.kp_cur > self.kp["grab_min"]:
-                    self.kp_cur -= (self.kp["grab"] - self.kp["grab_min"]) * self.recovery_rate
-                else:
-                    self.kp_cur = self.kp["grab_min"]
+                # if self.kp_cur > self.kp["grab_min"]:
+                #     self.kp_cur -= (self.kp["grab"] - self.kp["grab_min"]) * self.recovery_rate
+                # else:
+                #     self.kp_cur = self.kp["grab_min"]
+                self.kp_cur = self.kp["grab_min"]
 
             kp = self.kp_cur
         else:
@@ -549,15 +535,15 @@ class FSM:
 
         # speed = self.max_speed * np.sign(self.ft_ema[tz]) * (1 + (self.ft_ema[tz] / 0.007))
         # speed = max_speed_roll * np.sign(self.ft_ema[tz]) * (1 + (self.ft_ema[tz] / 0.0003))
-        speed = max_speed_roll * np.sign(self.ft_ema[tz]) * (1 + (self.ft_ema[tz] / self.thresh["tz"]))
-        # beta = 800
-        # speed = max_speed_roll * np.sign(self.ft_ema[tz]) * math.tanh(beta * self.ft_ema[tz])
+        # speed = max_speed_roll * np.sign(self.ft_ema[tz]) * (1 + (self.ft_ema[tz] / self.thresh["tz"]))
+        speed = max_speed_roll * (1-(abs(self.ft_ema[tz]) / self.thresh["tz"]))
+        # speed = 0.3
 
         # speed = 0
         # if abs(self.ft_ema[tz]) > 0.001:
         #     speed = max_speed_roll * np.sign(self.ft_ema[tz])
 
-        if speed > max_speed_roll:
+        if abs(speed) > max_speed_roll:
             speed = max_speed_roll * np.sign(speed)
 
         v_ee: list[float] = [0, 0, 0]
@@ -565,7 +551,7 @@ class FSM:
 
         twist_roll = np.array(v_ee + w_ee)
 
-        print(f"DEBUG roll align: speed: {speed:.4f}, tz ema/avg: {self.ft_ema[tz]:.6f}/{self.ft_avg[tz]:.6f}, twist: {[f"{x:.6f}" for x in twist_roll]}")
+        # print(f"DEBUG roll align: speed: {speed:.4f}, tz ema/avg: {self.ft_ema[tz]:.6f}/{self.ft_avg[tz]:.6f}, twist: {[f"{x:.6f}" for x in twist_roll]}")
         return twist_roll
     
     
