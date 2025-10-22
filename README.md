@@ -6,4 +6,4 @@ Franka panda model/object files can be found in the python venv: .venv\Lib\site-
 First install the requirements, "pip install -r requirements.txt"
 Then run with: "python src\main.py <desired_scenario>".
 
-If a scenario is not given, a list of available scenarios is displayed "python src\main.py"
+If a scenario is not given, a list of available scenarios is displayed "python bin\main.py"
