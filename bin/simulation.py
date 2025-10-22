@@ -16,25 +16,27 @@ class Simulation:
         self.obj = None
 
     # -----------------------------------------------------------------------------------------------------------
-    def init_sim(self, sim_obj: dict[str, Any]) -> None:
+    def init_sim(self, sim_obj: dict[str, Any] | None) -> None:
         with self.sim_lock:
             p.connect(p.GUI)
             p.setAdditionalSearchPath(pybullet_data.getDataPath())
-            p.resetSimulation(p.RESET_USE_DEFORMABLE_WORLD)
+            # p.resetSimulation(p.RESET_USE_DEFORMABLE_WORLD)
             p.setGravity(0, 0, self.gravity)
             p.setRealTimeSimulation(1)
-            p.setTimeStep(0.5/1000.0)
+            # p.setTimeStep(0.5/1000.0)
             p.setPhysicsEngineParameter(
                 numSolverIterations=50,
                 solverResidualThreshold=1e-9,
-                numSubSteps=3,
-                frictionERP=0.20, # higher value = more friction
-                contactERP=0.20,
-                allowedCcdPenetration=-0.02,
+                numSubSteps=5,
+                # erp=0.2,
+                # frictionERP=0.60,
+                # contactERP=0.60,
+                # allowedCcdPenetration=0.001,
                 # warmStartingFactor=0.95,
-                contactBreakingThreshold=0.05,
-                useSplitImpulse=1,
-                splitImpulsePenetrationThreshold=-0.005,
+                # contactBreakingThreshold=0.005,
+                useSplitImpulse=0,
+                # splitImpulsePenetrationThreshold=-0.005,
+                # splitImpulsePenetrationThreshold=-0.02,
             )
             p.resetDebugVisualizerCamera(cameraDistance=1.2,
                                          cameraYaw=50,
@@ -48,112 +50,98 @@ class Simulation:
                                     useFixedBase=True)
 
             for link in [9, 10]:
-                p.changeDynamics(bodyUniqueId=self.robot, 
-                                 linkIndex=link,
-                                 # contactStiffness=7.5e2,
-                                #  contactStiffness=1e4,
-                                 contactStiffness=5e3,
-                                 # contactDamping=0.5,
-                                 contactDamping=0.7,
-                                #  collisionMargin=0.0005,
-                                 lateralFriction=0.7,
-                                #  rollingFriction=0.0005,
-                                 spinningFriction=0.7)
+                p.changeDynamics(
+                    bodyUniqueId=self.robot, 
+                    linkIndex=link,
+                    contactStiffness=15000.0,
+                    contactDamping=1.0,
+                    lateralFriction=0.7,
+                    spinningFriction=0.1
+                )
 
-            num_joints = p.getNumJoints(self.robot)
-            for i in range(0, num_joints):
-                p.enableJointForceTorqueSensor(self.robot, i, 1)
-
-        self.create_object(sim_obj)
+        if sim_obj is not None:
+            self.create_object(sim_obj)
 
     # -----------------------------------------------------------------------------------------------------------
     def create_object(self, sim_obj: dict[str, Any]) -> None:
-        flags = p.URDF_USE_INERTIA_FROM_FILE
+        objflags = p.URDF_USE_INERTIA_FROM_FILE
+        objscale = 1.0
+        objname = ""
+        base_quat = p.getQuaternionFromEuler(sim_obj['orn'])
+        base_pos = sim_obj['pos']
+        dynargs: dict[str, Any] = {}
+        
         match sim_obj['name']:
-            case "mustard_bottle":
-                self.obj = self.create_mustard_bottle(flags, base_orn=sim_obj['orn'], base_pos=sim_obj['pos'])
+            # case "mustard_bottle":
+            #     objname = "YcbMustardBottle"
+            #     dynargs = {
+            #         "contactStiffness": 70000,
+            #         # contactStiffness=1e4,
+            #         "contactDamping": 0.2,
+            #         # contactDamping=0.5,
+            #         #  rollingFriction=0.0005,
+            #         "lateralFriction": 0.4,
+            #         "spinningFriction": 0.4,
+            #     }
             case "pringles_can":
-                self.obj = self.create_pringles_can(flags, base_orn=sim_obj['orn'], base_pos=sim_obj['pos'])
+                objname = "YcbChipsCan"
+                objscale = 0.9
+                dynargs = {
+                    "contactStiffness": 4000.0,
+                    "contactDamping": 20.0,
+                    "lateralFriction": 0.45,
+                    "spinningFriction": 0.1,
+                    "mass": 0.6
+                }
             case "cracker_box":
-                self.obj = self.create_cracker_box(flags, base_orn=sim_obj['orn'], base_pos=sim_obj['pos'])
+                objname = "YcbCrackerBox"
+                dynargs = {
+                    "contactStiffness": 4000.0,
+                    "contactDamping": 20.0,
+                    "lateralFriction": 0.4,
+                    "spinningFriction": 0.1,
+                    "mass": 0.411
+                }
+            case "meat_can":
+                objname = "YcbPottedMeatCan"
+                objscale = 1.3
+                dynargs = {
+                    "contactStiffness": 50000.0,
+                    "contactDamping": 20.0,
+                    "lateralFriction": 0.4,
+                    "spinningFriction": 0.1,
+                    "mass": 0.3
+                }
+            case "tomato_can":
+                objname = "YcbTomatoSoupCan"
+                objscale = 1.0
+                dynargs = {
+                    "contactStiffness": 30000.0,
+                    "contactDamping": 20.0,
+                    "lateralFriction": 0.45,
+                    "spinningFriction": 0.1,
+                    "mass": 1.0
+                }
             case _:
                 print("ERROR: Unknown object, exiting")
                 sys.exit(1)
 
-    # -----------------------------------------------------------------------------------------------------------
-    def create_mustard_bottle(self, flags: int, base_orn: list[float], base_pos: list[float]) -> int:
+        try:
+            obj = p.loadURDF(
+                os.path.join(ycb_objects.getDataPath(), objname, "model.urdf"),
+                basePosition=base_pos,
+                baseOrientation=base_quat,
+                globalScaling=objscale,
+                flags=objflags)
 
-        base_quat = p.getQuaternionFromEuler(base_orn)
-        obj = p.loadURDF(
-            os.path.join(ycb_objects.getDataPath(), "YcbMustardBottle", "model.urdf"),
-            basePosition=base_pos,
-            baseOrientation=base_quat,
-            flags=flags)
+            p.changeDynamics(bodyUniqueId=obj, 
+                            linkIndex=-1,
+                            **dynargs)
+        except Exception as e:
+            print(f"ERROR: Exception loading URDF object: {e}, exiting")
+            sys.exit(1)
 
-        p.changeDynamics(
-            bodyUniqueId=obj,
-            linkIndex=-1,
-            # contactStiffness=1e4,
-            contactStiffness=7e4,
-            # contactStiffness=1e4,
-            # contactDamping=0.5,
-            contactDamping=0.2,
-            lateralFriction=0.4,
-            spinningFriction=0.4)
-        return obj
-
-    # -----------------------------------------------------------------------------------------------------------
-    def create_pringles_can(self, flags: int, base_orn: list[float], base_pos: list[float]) -> int:
-
-        base_quat = p.getQuaternionFromEuler(base_orn)
-        obj = p.loadURDF(
-            os.path.join(ycb_objects.getDataPath(), "YcbChipsCan", "model.urdf"),
-            basePosition=base_pos,
-            baseOrientation=base_quat,
-            globalScaling=0.9,
-            flags=flags)
-
-        # p.changeDynamics(bodyUniqueId=obj, linkIndex=-1,
-        #                  # contactStiffness=9e4,
-        #                  contactStiffness=9e4,
-        #                  # contactStiffness=1e4,
-        #                  # contactDamping=0.5,
-        #                  contactDamping=0.9,
-        #                  lateralFriction=0.35,
-        #                  spinningFriction=0.35,
-        #                  mass=1.0)
-        p.changeDynamics(bodyUniqueId=obj, 
-                         linkIndex=-1,
-                         contactStiffness=3e4,
-                         contactDamping=0.4,
-                        #  linearDamping=0.4,
-                        #  angularDamping=0.4,
-                         lateralFriction=0.15,
-                         spinningFriction=0.15,
-                         mass=1.0)
-        return obj
-
-    # -----------------------------------------------------------------------------------------------------------
-    def create_cracker_box(self, flags: int, base_orn: list[float], base_pos: list[float]) -> int:
-
-        base_quat = p.getQuaternionFromEuler(base_orn)
-        obj = p.loadURDF(
-            os.path.join(ycb_objects.getDataPath(), "YcbCrackerBox", "model.urdf"),
-            basePosition=base_pos,
-            baseOrientation=base_quat,
-            flags=flags)
-
-        p.changeDynamics(bodyUniqueId=obj, linkIndex=-1,
-                         # contactStiffness=1e4,
-                         contactStiffness=3e4,
-                         # contactStiffness=1e4,
-                         # contactDamping=0.5,
-                         contactDamping=0.4,
-                         lateralFriction=0.15,
-                        #  rollingFriction=0.0005,
-                         spinningFriction=0.15)
-
-        return obj
+        self.obj = obj
 
     # -----------------------------------------------------------------------------------------------------------
     def create_red_cube(self) -> int:

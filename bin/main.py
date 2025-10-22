@@ -48,7 +48,7 @@ class App:
         if len(sys.argv) != 2:
             got_err = True
             print("Usage: python main.py <scenario_name>")
-        elif sys.argv[1] not in self.scenarios.keys():
+        elif sys.argv[1] not in self.scenarios.keys() and sys.argv[1] != "none":
             got_err = True
             print(f"Error: Scenario '{sys.argv[1]}' not found.")
             
@@ -161,6 +161,8 @@ class App:
         # myscenario = "pringles1"
         myscenario = self.current_scenario
         sim_obj_dic = self.scenarios[myscenario]["sim_obj"]
+        if sim_obj_dic == "None":
+            sim_obj_dic = None
         robot_conf_dict = self.scenarios[myscenario]["robot"]
         
         ##########################################################################################
@@ -168,13 +170,16 @@ class App:
         sim = Simulation()
         sim.init_sim(sim_obj=sim_obj_dic)
         self.sim_lock = sim.sim_lock
+        no_move=(myscenario == "none")
 
         controller_thread = Controller(
             sim=sim, 
             shutdown_event=self.shutdown_event, 
-            draw_debug=False, 
+            draw_debug=False,
+            print_debug=False,
             do_timers=True, 
-            initial_robot_conf=robot_conf_dict
+            initial_robot_conf=robot_conf_dict,
+            no_move=no_move
         )
         controller_thread.start()
         threads.append(controller_thread)

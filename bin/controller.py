@@ -21,8 +21,10 @@ class Controller(threading.Thread):
         sim: Simulation,
         shutdown_event: threading.Event,
         draw_debug: bool = False,
+        print_debug: bool = False,
         do_timers: bool = False,
         initial_robot_conf: dict[str, list[float]] = {"pos": [0.7, 0, 0.1], "orn": [ 0, 0.7071068, 0, 0.7071068 ]},
+        no_move: bool = False,
         **kwargs: Any,
     ) -> None:
 
@@ -34,6 +36,7 @@ class Controller(threading.Thread):
         self.sim_lock = sim.sim_lock
         self.shutdown_event = shutdown_event
         self.draw_debug = draw_debug
+        self.print_debug = print_debug
         self.do_timers = do_timers
         self.debug_lines: dict[str, Any] = {}
         self.interval = 0.005 # 5ms
@@ -46,8 +49,10 @@ class Controller(threading.Thread):
         self.fsm = FSM(
             controller=self,
             initial_pos=self.initial_pos,
-            initial_orn=np.array(initial_robot_conf["orn"])
+            initial_orn=np.array(initial_robot_conf["orn"]),
+            no_move=no_move
         )
+        self.no_move = no_move
 
         self.finger_joints = [9, 10]
 
@@ -65,7 +70,6 @@ class Controller(threading.Thread):
         # ===============================================================================
         # Variables to write data/plot files
         self.ft_names: list[str] = ["fx", "fy", "fz", "tx", "ty", "tz"]
-        # self.ft_types = ["raw", "comp", "contact"]
         self.ft_types: list[str] = ["contact_ft", "ema_ft", "feeling_ft"]
         self.ft_keys: list[str] = [f"{name}_{type}" for type in self.ft_types for name in self.ft_names]
         self.ft: dict[str, float] = {ft_name: 0.0 for ft_name in self.ft_keys}
@@ -194,7 +198,7 @@ class Controller(threading.Thread):
 
     # -----------------------------------------------------------------------------------------------------------
     def get_contact_ft(self) -> None:
-        """ Get current contact points and sum forces/torques on wrist's center of mass """
+        """ Get current contact points and sum forces/torques on wrist's position, this is our "wrist sensor" """
         
         contact_pts = p.getContactPoints(self.robot, self.sim.obj)
         if len(contact_pts) <= 0:
@@ -202,18 +206,19 @@ class Controller(threading.Thread):
             return
         
         ls = self.link_states["wrist"]
-        # using center of mass link pos/quat for force stuff
-        wrist_pos, wrist_quat = ls[:2]
+        wrist_pos, wrist_quat = ls[4], ls[5]
         wrist_pos = np.array(wrist_pos)
 
-        rot_wrist_world = np.array(p.getMatrixFromQuaternion(wrist_quat)).reshape(3, 3)
-        rot_world_to_wrist = rot_wrist_world.T
-        
+        rot_wrist_to_world = np.array(p.getMatrixFromQuaternion(wrist_quat)).reshape(3, 3)
+        rot_world_to_wrist = rot_wrist_to_world.T
+
         total_force_world = np.zeros(3)
         total_torque_world = np.zeros(3)
         contact_pos = np.zeros(3)
-        
+        cntr = 0
+
         for pt in contact_pts:
+            cntr += 1
             contact_pos = np.array(pt[5])
             normal = np.array(pt[7])
             fn = pt[9]
@@ -224,41 +229,58 @@ class Controller(threading.Thread):
             f_lat2 = pt[12]
 
             contact_force = fn * normal + f_lat1 * lateral_dir1 + f_lat2 * lateral_dir2
-
+            
             r = contact_pos - wrist_pos
             torque = np.cross(r, contact_force)
 
             total_force_world += contact_force
             total_torque_world += torque
 
-            # link = pt[3]
-            # print(f"DEBUG contact: link: {link}, cntr: {cntr}, "
-            #       f"norm: {[f"{x:.6f}" for x in rot_world_to_wrist @ (fn * normal)]}, "
-            #       f"ff1: {[f"{x:.6f}" for x in rot_world_to_wrist @ (f_lat1 * lateral_dir1)]}, "
-            #       f"ff2: {[f"{x:.6f}" for x in rot_world_to_wrist @ (f_lat2 * lateral_dir2)]}, "
-            #       f"total: {[f"{x:.6f}" for x in rot_world_to_wrist @ total_force_world]}")
+            if self.print_debug:
+                link = pt[3]
+                print(f"DEBUG contact: link: {link}, cntr: {cntr}, "
+                    f"norm: {[f"{x:.6f}" for x in rot_world_to_wrist @ (fn * normal)]}, "
+                    f"ff1: {[f"{x:.6f}" for x in rot_world_to_wrist @ (f_lat1 * lateral_dir1)]}, "
+                    f"ff2: {[f"{x:.6f}" for x in rot_world_to_wrist @ (f_lat2 * lateral_dir2)]}, "
+                    f"total: {[f"{x:.6f}" for x in rot_world_to_wrist @ total_force_world]}")
+
 
         total_force_local = rot_world_to_wrist @ total_force_world
         total_torque_local = rot_world_to_wrist @ total_torque_world
 
         self.ft_contact_wrist = list(total_force_local) + list(total_torque_local)
 
-        # # Draw debug line
-        # if self.draw_debug:
-        #     # debug direction
-        #     start_pos = contact_pos
-            
-        #     for i in range(6):
-        #         line_local = np.zeros(3)
-        #         line_local[i % 3] = self.ft_contact_wrist[i]
-        #         line_world = rot_wrist_world @ line_local
-        #         end_pos = start_pos + line_world
-                
-        #         linecolor = [0.8, 0.0, 0.0] if i < 3 else [0.0, 0.0, 0.8]
-        #         name = f"force_wrist_{i}" if i < 3 else f"torque_wrist_{i % 3}"
+        if self.print_debug:
+            print(f"DEBUG: contact points: {cntr}, total force wrist: {[f'{x:.4f}' for x in self.ft_contact_wrist]}")
 
-        #         kwargs: dict[str, Any] = {"lineColorRGB": linecolor, "lineWidth": 8, "lifeTime": 0}
-        #         self.update_debug_line(name, start_pos, end_pos, kwargs)
+        # Draw debug line
+        if self.draw_debug:
+            # debug direction
+            start_pos = contact_pos
+
+            ft_names = ["x", "y", "z"]
+            for i in range(6):
+                line_local = np.zeros(3)
+                line_local[i % 3] = self.ft_contact_wrist[i]
+                line_world = rot_wrist_to_world @ line_local
+                end_pos = start_pos + line_world
+                
+                linecolor = [0.8, 0.0, 0.0] if i < 3 else [0.0, 0.0, 0.8]
+                name = f"F_wrist_{ft_names[i]}" if i < 3 else f"T_wrist_{ft_names[i % 3]}"
+
+                kwargs: dict[str, Any] = {"lineColorRGB": linecolor, "lineWidth": 8, "lifeTime": 0}
+                self.update_debug_line(name, start_pos, end_pos, kwargs, name)
+
+    # -----------------------------------------------------------------------------------------------------------
+    def get_closest_point(self) -> float:
+        """ Get closest distance from wrist to object """
+        
+        closest_pts = p.getClosestPoints(self.robot, self.sim.obj, distance=100.0)
+        if len(closest_pts) <= 0:
+            return 100.0
+        
+        min_dist = min(pt[8] for pt in closest_pts)
+        return min_dist
 
     # -----------------------------------------------------------------------------------------------------------
     def stop_movement(self) -> None:
@@ -352,8 +374,8 @@ class Controller(threading.Thread):
             bool: True if reached desired position within threshold, False otherwise
         """
         
-        Kp_lin = 0.9
-        Kp_ang = 0.9
+        Kp_lin = 1.5
+        Kp_ang = 1.5
         link_name = "wrist"
 
         pos_err, quat_err = self.get_pos_error(desired_pos=pos_world, desired_quat=quat_world, link_name=link_name)
@@ -406,9 +428,9 @@ class Controller(threading.Thread):
         ls = self.link_states[link_name]
         cur_pos, cur_quat = ls[4], ls[5]
         
-        quat_error = p.getDifferenceQuaternion(cur_quat, desired_quat)
         pos_error = desired_pos - cur_pos
-
+        quat_error: NDArray[np.float64] = np.array(p.getDifferenceQuaternion(cur_quat, desired_quat))
+        
         return pos_error, quat_error
 
     # -----------------------------------------------------------------------------------------------------------
@@ -708,33 +730,35 @@ class Controller(threading.Thread):
                 speed_hat = speed_world / np.linalg.norm(speed_world)
                 end_pos = start_pos_link + (speed_hat * 0.3)
                 kwargs: dict[str, Any] = {"lineColorRGB": color, "lineWidth": 3, "lifeTime": 0}
-                self.update_debug_line(name, start_pos_link, end_pos, kwargs)
+                self.update_debug_line(name, start_pos_link, end_pos, kwargs, name)
 
             # Used link (usually wrist) and End Effector orientation lines
             start_pos_ee = np.array(ee_pos_world)
             line_len = 0.2
+            orntypes = ["orn_x", "orn_y", "orn_z"]
             for i in range(3):
                 line_base = np.zeros(3)
                 line_color = np.zeros(3)
                 line_base[i] = line_len
                 line_color[i] = 1.0 # RGB: x=red, y=green, z=blue
-                line_name_link = f"wrist_orn_{i}"
-                line_name_ee = f"ee_orn_{i}"
+                line_name_link = f"wrist_{orntypes[i]}"
+                line_name_ee = f"ee_{orntypes[i]}"
                 link_line_world = R_link2world.dot(line_base)
                 ee_line_world = R_ee2world.dot(line_base)
                 
                 kwargs = {"lineColorRGB": line_color, "lineWidth": 1, "lifeTime": 0}
                 end_pos_link = start_pos_link + link_line_world
                 end_pos_ee = start_pos_ee + ee_line_world
-                self.update_debug_line(line_name_link, start_pos_link, end_pos_link, kwargs)
-                self.update_debug_line(line_name_ee, start_pos_ee, end_pos_ee, kwargs)
+                self.update_debug_line(line_name_link, start_pos_link, end_pos_link, kwargs, line_name_link)
+                self.update_debug_line(line_name_ee, start_pos_ee, end_pos_ee, kwargs, line_name_ee)
                 
     # -----------------------------------------------------------------------------------------------------------
     def update_debug_line(self, 
                           line_name: str, 
                           start_pos: NDArray[np.float64], 
                           end_pos: NDArray[np.float64], 
-                          kwargs: dict[str, Any]
+                          kwargs: dict[str, Any],
+                          text: None | str = None
     ) -> None:
         """ 
         Update or create a debug line in the simulation based on the given name.
@@ -756,6 +780,12 @@ class Controller(threading.Thread):
             kwargs["replaceItemUniqueId"] = self.debug_lines[line_name]
 
         self.debug_lines[line_name] = p.addUserDebugLine(start_pos, end_pos, **kwargs)
+
+        if text is not None:
+            text_kwargs: dict[str, Any] = {"textColorRGB": kwargs["lineColorRGB"], "textSize": 1.0, "lifeTime": 0}
+            if (line_name + "_text") in self.debug_lines:
+                text_kwargs["replaceItemUniqueId"] = self.debug_lines[line_name + "_text"]
+            self.debug_lines[line_name + "_text"] = p.addUserDebugText(text, end_pos, **text_kwargs)
 
     # -----------------------------------------------------------------------------------------------------------
     def toggle_pause_sim(self, pause: bool) -> None:
@@ -830,8 +860,9 @@ class Controller(threading.Thread):
                 self.link_states: dict[str, Any] = dict(zip(self.idxs.keys(), p.getLinkStates(self.robot, list(self.idxs.values()), computeForwardKinematics=True)))
                 self.movable_joint_states: dict[int, Any] = dict(zip(self.movable_joint_idxs, p.getJointStates(self.robot, self.movable_joint_idxs)))
 
-                self.get_contact_ft()
-                self.next_timer("get_contact_ft")
+                if not self.no_move:
+                    self.get_contact_ft()
+                    self.next_timer("get_contact_ft")
 
                 self.fsm_timers = self.fsm.next_state()
                 self.next_timer("fsm_next_state")
