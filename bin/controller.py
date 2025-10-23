@@ -107,6 +107,7 @@ class Controller(threading.Thread):
         self.velocity_solver = osqp.OSQP()
         self.link_states: dict[str, Any] = {}
         self.movable_joint_states: dict[int, Any] = {}
+        self.cur_contact_pt = np.zeros(3)
 
     # -----------------------------------------------------------------------------------------------------------
     def get_idxs(self) -> None:
@@ -216,7 +217,7 @@ class Controller(threading.Thread):
         total_torque_world = np.zeros(3)
         contact_pos = np.zeros(3)
         cntr = 0
-
+        self.cur_contact_pt = np.array(contact_pts[0][5])
         for pt in contact_pts:
             cntr += 1
             contact_pos = np.array(pt[5])
@@ -270,6 +271,10 @@ class Controller(threading.Thread):
 
                 kwargs: dict[str, Any] = {"lineColorRGB": linecolor, "lineWidth": 8, "lifeTime": 0}
                 self.update_debug_line(name, start_pos, end_pos, kwargs, name)
+    # -----------------------------------------------------------------------------------------------------------
+    def get_cur_contact_pt(self) -> NDArray[np.float64]:
+        """ Get current contact point in world frame """
+        return self.cur_contact_pt
 
     # -----------------------------------------------------------------------------------------------------------
     def get_closest_point(self) -> float:

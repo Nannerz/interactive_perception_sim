@@ -107,6 +107,8 @@ class FSM:
         self.tz_sign = 0
         self.prev_roll_angle = 0
         self.initial_roll_dir = 0
+        self.initial_contact_pt = np.zeros(3)
+        self.final_contact_pt = np.zeros(3)
 
         self.testcntr = 0
         self.timers: dict[str, float] = defaultdict(float)
@@ -354,6 +356,7 @@ class FSM:
         if self.ft_ema[fz] <= self.thresh["fz_min"] and self.ft_ema[fz] > self.thresh["fz_max"]:
             self.is_touching = True
             if not self.touched_once:
+                self.initial_contact_pt = self.controller.get_cur_contact_pt()
                 self.touched_once = True
         else:
             self.is_touching = False
@@ -414,6 +417,10 @@ class FSM:
                     self.doing_wiggle = False
                     self.aligned["axes"] = True
                     self.align_axes = False
+                    self.final_contact_pt = self.controller.get_cur_contact_pt()
+                    contact_dist = np.linalg.norm(self.final_contact_pt - self.initial_contact_pt)
+                    print(f"Initial contact pt: {[f"{x:.4f}" for x in self.initial_contact_pt]}, Final contact pt: {[f"{x:.4f}" for x in self.final_contact_pt]}, Contact pt dist: {contact_dist:.6f} m")
+
                     return np.zeros(6)
 
         self.wiggle_cntr += 1
