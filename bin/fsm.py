@@ -46,13 +46,14 @@ class FSM:
         # Wiggle
         self.wiggle_cntr = 0
         self.wiggle_dir = 1
-        self.wiggles_before_align = 2
+        self.wiggles_before_align = 3
         self.wiggle_total_cntr = 0
         wiggles_per_sec = 2.0
-        wiggle_kp = 180.0
+        wiggle_kp = 250.0
         self.wiggle_max = math.ceil(1/self.interval * 1/wiggles_per_sec) + (4 - math.ceil(1/self.interval * 1/wiggles_per_sec) % 4)
         self.wiggle_w_yaw = wiggle_kp/self.wiggle_max * per_sec
         self.wiggle_w_pitch = wiggle_kp/self.wiggle_max * per_sec
+        print(f"DEBUG wiggle_max: {self.wiggle_max}, wiggle_w_yaw: {self.wiggle_w_yaw:.4f}, wiggle_w_pitch: {self.wiggle_w_pitch:.4f}")
 
         self.align_pos_world = np.zeros(3)
         self.align_quat_world = np.zeros(4)
@@ -69,16 +70,17 @@ class FSM:
 
         self.kp = {
             "z_initial": 0.8,
-            "z": 0.11,
+            "z": 0.12,
             "grab": 0.3,
-            "grab_min": 0.08,
+            "grab_min": 0.12,
         }
         self.kp_cur = self.kp["z"]
 
         self.beta = {
-            "aln_y": 200.0,
-            "aln_yaw": 40.0,
-            "aln_pitch": 320.0,
+            # "aln_y": 200.0,
+            "aln_y": 55.0,
+            "aln_yaw": 28.0,
+            "aln_pitch": 240.0,
         }
         self.recovery_rate = 1.0/400.0
 
@@ -87,9 +89,9 @@ class FSM:
             "fz": -0.09,  # threshold for force in z direction (touch)
             "fz_max": -0.15,  # threshold for force in z direction
             "fz_min": -0.05,
-            "fy": 0.002,  # threshold for force in y direction (yaw algn)
+            "fy": 0.0015,  # threshold for force in y direction (yaw algn)
             "tx": 0.0012,
-            "ty": 0.0002,  # threshold for torque in y direction (pitch algn)
+            "ty": 0.0001,  # threshold for torque in y direction (pitch algn)
             "tz": 0.006,
         }
 
@@ -110,6 +112,10 @@ class FSM:
         self.initial_contact_pt = np.zeros(3)
         self.final_contact_pt = np.zeros(3)
 
+        self.fsmstart = 0
+        self.interactperceivestart = 0
+        self.endtime = 0
+
         self.testcntr = 0
         self.timers: dict[str, float] = defaultdict(float)
         self.loop_timers: dict[str, float] = defaultdict(float)
@@ -123,6 +129,7 @@ class FSM:
         
         match self.state:
             case "start":
+                self.fsmstart = time.perf_counter()
                 self.controller.reset_robot_pos()
                 self.state = "do_initial_pos"
                 self.next_timer("state_start")
@@ -136,6 +143,9 @@ class FSM:
                 self.next_timer("state_open_gripper")
 
             case "interact_perceive":
+                if self.interactperceivestart == 0:
+                    self.interactperceivestart = time.perf_counter()
+                    
                 if self.no_move:
                     self.controller.toggle_pause_sim(True)
                     self.state = "done"
@@ -145,6 +155,8 @@ class FSM:
                 self.next_timer("state_interact_perceive")
 
             case "done":
+                self.endtime = time.perf_counter()
+                print(f"FSM done. Total time: {self.endtime - self.fsmstart:.3f}s, interact/perceive time: {self.endtime - self.interactperceivestart:.3f}s")
                 self.controller.toggle_pause_sim(True)
 
             case "test":
@@ -218,7 +230,7 @@ class FSM:
         if self.controller.is_gripper_open():
             print(f"Gripper opened")
             self.state = "interact_perceive"
-            # self.controller.toggle_pause_sim(True)
+            self.controller.toggle_pause_sim(True)
             # self.state = "test"
 
         else:
@@ -351,8 +363,6 @@ class FSM:
         """
 
         # small offset so if we are just under, it's still "touching"
-        # if self.ft_ema[fz] <= self.thresh["fz_min"] and self.ft_ema[fz] > self.thresh["fz_max"]:
-        # if self.ft_ema[fz] < self.thresh["fz"] + 0.03:
         if self.ft_ema[fz] <= self.thresh["fz_min"] and self.ft_ema[fz] > self.thresh["fz_max"]:
             self.is_touching = True
             if not self.touched_once:
@@ -513,7 +523,8 @@ class FSM:
         """
         twist_y = np.zeros(6)
         
-        speed = -1 * self.max_speed * math.tanh(self.beta["aln_y"] * self.ft_ema[tx])
+        # speed = -1 * self.max_speed * math.tanh(self.beta["aln_y"] * self.ft_ema[tx])
+        speed = -1 * self.max_speed * math.tanh(self.beta["aln_y"] * self.ft_avg[tx])
         if abs(speed) > self.max_speed:
             speed = self.max_speed * np.sign(speed)
 

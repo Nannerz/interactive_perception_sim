@@ -1,19 +1,39 @@
 initial_robot_pos:
   straight:         &pos_straight         [0.6, 0.0, 0.2]      # use with straight
   angled_up:        &pos_angled_up        [0.6, 0.0, 0.12]     # angle up
-  angled_down:      &pos_angled_down      [0.6, 0.04, 0.16]    # use with angles down
-  angled_down2:     &pos_angled_down2     [0.6, 0.03, 0.16]    # use with angles down
+  angled_down:      &pos_angled_down      [0.58, 0.03, 0.23]    # use with angles down
+  angled_down2:     &pos_angled_down2     [0.6, 0.02, 0.16]    # use with angles down
   straight_low:     &pos_straight_low     [0.6, 0.0, 0.07]      # use with straight
-  rollfail:         &pos_rollfail         [0.6, 0.04, 0.11]     # angle up
-  rollsuccess:      &pos_rollsuccess      [0.6, 0.04, 0.17]     # angle up
+  rollfail:         &pos_rollfail         [0.6, 0.1, 0.11]     # angle up
+  rollsuccess:      &pos_rollsuccess      [0.6, 0.05, 0.17]     # angle up
 
 initial_robot_orn:
   straight:       &orn_straight       !quat [ 0, 0.7071067811865475, 0, 0.7071067811865476 ]        # straight forward in Z direction
-  pitch_down:     &orn_pitch_down     !quat [ 0, 0.7933533, 0, 0.6087614 ]                          # pitched down
+  
+  # pitch_down:     &orn_pitch_down     !quat [ 0, 0.7933533, 0, 0.6087614 ]                          # pitched down
+  # pitch_down:     &orn_pitch_down     !quat [ 0, 0.8660254037844386, 0, 0.5000000000000001 ]                          # pitched down
+  # # xy'z'': 0, 120, 0
+  pitch_down:     &orn_pitch_down     !quat [ 0.053057054501380825, 0.7903343913115048, 0.0691452996344182, 0.6064449079812421 ]                          # pitched down
+  # xy'z'': 0, 120, 0
+
   pitch_up:       &orn_pitch_up       !quat [ 0, 0.6087614, 0, 0.7933533 ]                          # pitched up
+  # xy'z'': 0, 75, 0
+  pitch_up2:       &orn_pitch_up2      !quat [ 0, 0.5372996083468239, 0, 0.8433914458128856 ]                          # pitched up
+  # xy'z'': 0, 65, 0
+
   angle3:         &orn_angle3         !quat [ 0.2544069, -0.8862273, 0.2544069, 0.2918142 ]         # pitched up & yaw
+
   rollfail:       &orn_rollfail       !quat [ 0.5880184, -0.1575591, 0.7663205, -0.205335 ]         # pitched up & roll
-  rollsuccess:    &orn_rollsuccess    !quat [ 0.4663383, -0.3913043, 0.6077439, -0.5099577 ]
+  # xy'z'': 0, 75, -150
+  # rollfail:       &orn_rollfail       !quat [ 0.5099576972426346, -0.3913043038218775, 0.6077439177599803, -0.4663383098772987 ]         # pitched up & roll
+  # # xy'z'': 0 80 -105
+
+  # rollsuccess:    &orn_rollsuccess    !quat [ 0.4663383, -0.3913043, 0.6077439, -0.5099577 ]
+  # # xy'z'': 0 75 -100
+  # rollsuccess:    &orn_rollsuccess    !quat [ 0.535981747879933, -0.4112732602124075, 0.5849214378793379, -0.448826005132275 ]
+  # # xy'z'': 0 85 -105
+  rollsuccess:    &orn_rollsuccess    !quat [ 0.4550487816914453, -0.34917121103879223, 0.6498770105430656, -0.4986681690567814 ]
+  # xy'z'': 0 70 -105
   
 robot_confs:
   straight:         &robot_straight           { pos: *pos_straight, orn: *orn_straight }
@@ -21,6 +41,7 @@ robot_confs:
   angled_down:      &robot_angled_down        { pos: *pos_angled_down, orn: *orn_pitch_down }
   angled_down2:     &robot_angled_down2       { pos: *pos_angled_down2, orn: *orn_pitch_down }
   angled_up:        &robot_angled_up          { pos: *pos_angled_up, orn: *orn_pitch_up }
+  angled_up2:       &robot_angled_up2         { pos: *pos_angled_up, orn: *orn_pitch_up2 }
   rollfail:         &robot_rollfail           { pos: *pos_rollfail, orn: *orn_rollfail }
   rollsuccess:      &robot_rollsuccess        { pos: *pos_rollsuccess, orn: *orn_rollsuccess }
 
@@ -31,24 +52,24 @@ obj_pos:
   pringles_left:            &pos_pringles_left            [0.8, 0.060, 0.0002]
   pringles_right:           &pos_pringles_right           [0.8, -0.05, 0.0002]
   pringles_rollsuccess:     &pos_pringles_rollsuccess     [0.8, 0.04, 0.0002]
-  cracker1:                 &pos_cracker1                 [0.8, 0.02, 0.11]
+  cracker1:                 &pos_cracker1                 [0.8, 0.00, 0.11]
   cracker2:                 &pos_cracker2                 [0.8, 0.035, 0.11]
   cracker3:                 &pos_cracker3                 [0.8, -0.05, 0.11]
-  cracker4:                 &pos_cracker4                 [0.8, 0.05, 0.11]
-  cracker_rollsuccess:      &pos_cracker_rollsuccess      [0.8, 0.008, 0.11]
-  meatcan1:                 &pos_meatcan1                 [0.9, 0.05, 0.06]
+  cracker_flat:             &pos_cracker_flat             [0.8, 0.1, 0.11]
+  cracker_rollsuccess:      &pos_cracker_rollsuccess      [0.81, 0.009, 0.11]
+  meatcan1:                 &pos_meatcan1                 [0.9, -0.02, 0.06]
   tomatocan1:               &pos_tomatocan1               [0.9, 0.05, 0.08]
 
 obj_orn:
   default:              &orn_default              [0, 0, 0]
   mustard:              &orn_mustard              !deg [0, 0, 20.0]
   pringles:             &orn_pringles             [0, 0, 0.0]
-  cracker1:             &orn_cracker1             !deg [0, 0, 75.0]
+  cracker1:             &orn_cracker1             !deg [0, 0, 62.0]
   cracker2:             &orn_cracker2             !deg [0, 0, 90.0]
   cracker3:             &orn_cracker3             !deg [0, 0, 105.0]
-  cracker4:             &orn_cracker4             !deg [0, 0, 0.0]
+  cracker_flat:         &orn_cracker_flat         !deg [0, 0, 0.0]
   cracker_rollsuccess:  &orn_cracker_rollsuccess  !deg [0, 0, 90.0]
-  meatcan1:             &orn_meatcan1             !deg [0, 0, 45.0]
+  meatcan1:             &orn_meatcan1             !deg [0, 0, 0.0] # default is -35 degrees
   tomatocan1:           &orn_tomatocan1           !deg [0, 0, 0.0]
 
 obj_names:
@@ -69,7 +90,7 @@ obj_confs:
   cracker1:               &obj_cracker1                 { "name": *name_cracker, "pos": *pos_cracker1, "orn": *orn_cracker1 }
   cracker2:               &obj_cracker2                 { "name": *name_cracker, "pos": *pos_cracker2, "orn": *orn_cracker2 }
   cracker3:               &obj_cracker3                 { "name": *name_cracker, "pos": *pos_cracker3, "orn": *orn_cracker3 }
-  cracker4:               &obj_cracker4                 { "name": *name_cracker, "pos": *pos_cracker4, "orn": *orn_cracker4 }
+  cracker_flat:           &obj_cracker_flat             { "name": *name_cracker, "pos": *pos_cracker_flat, "orn": *orn_cracker_flat }
   cracker_rollsuccess:    &obj_cracker_rollsuccess      { "name": *name_cracker, "pos": *pos_cracker_rollsuccess, "orn": *orn_cracker_rollsuccess }
 
   meatcan1:               &obj_meatcan1                 { "name": *name_meatcan, "pos": *pos_meatcan1, "orn": *orn_meatcan1 }
@@ -87,14 +108,15 @@ scenarios:
   pringles5:        {robot: *robot_angled_down, sim_obj: *obj_pringles_left }     # hand angle down, pringles can to the left
   pringles6:        {robot: *robot_angled_down, sim_obj: *obj_pringles_right }    # hand angle down, pringles can to the right
 
-  cracker1:         {robot: *robot_angled_up, sim_obj: *obj_cracker1 }
+  cracker1:         {robot: *robot_angled_up2, sim_obj: *obj_cracker1 }
   cracker2:         {robot: *robot_angled_up, sim_obj: *obj_cracker2 }
+  # cracker2:         {robot: *robot_angled_down, sim_obj: *obj_cracker2 }
   cracker3:         {robot: *robot_angled_up, sim_obj: *obj_cracker3 }
 
   meatcan1:         {robot: *robot_straight_low, sim_obj: *obj_meatcan1 }
 
   tomatocan1:       {robot: *robot_straight_low, sim_obj: *obj_tomatocan1 }
 
-  rollfail:         {robot: *robot_rollfail, sim_obj: *obj_cracker4 }  # hand pitched, yawed, and rolled. cracker4 straight ahead flat
+  rollfail:         {robot: *robot_rollfail, sim_obj: *obj_cracker_flat }  # hand pitched, yawed, and rolled. cracker_flat straight ahead flat
   # rollsuccess:      {robot: *robot_rollsuccess, sim_obj: *obj_pringles_rollsuccess }  # hand pitched, yawed, and rolled. pringles2 straight ahead flat
   rollsuccess:      {robot: *robot_rollsuccess, sim_obj: *obj_cracker_rollsuccess }  # hand pitched, yawed, and rolled. pringles2 straight ahead flat

@@ -108,6 +108,7 @@ class Controller(threading.Thread):
         self.link_states: dict[str, Any] = {}
         self.movable_joint_states: dict[int, Any] = {}
         self.cur_contact_pt = np.zeros(3)
+        self.printed_misalign = False
 
     # -----------------------------------------------------------------------------------------------------------
     def get_idxs(self) -> None:
@@ -198,6 +199,20 @@ class Controller(threading.Thread):
         self.data_queue.put({"type": "json", "data": pos}, timeout=0.001)
 
     # -----------------------------------------------------------------------------------------------------------
+    def get_misalign(self, pt: list[Any]) -> None:
+        ls = self.link_states["wrist"]
+        R = np.array(p.getMatrixFromQuaternion(ls[5])).reshape(3,3)
+        n = np.array(pt[7]) # contactNormalOnB (world)
+        n_wrist = R.T @ n  # contact normal in wrist frame
+        mis_yaw = np.pi + np.arctan2(n_wrist[1], n_wrist[2])
+        # mis_yaw = mis_yaw % (2 * np.pi)
+        mis_pitch = np.pi + np.arctan2(n_wrist[0], n_wrist[2])
+        # mis_pitch = mis_pitch % (2 * np.pi)
+        self.printed_misalign = True
+
+        print(f"misalign: yaw: {np.degrees(mis_yaw):.3f} deg, pitch: {np.degrees(mis_pitch):.3f} deg")
+
+    # -----------------------------------------------------------------------------------------------------------
     def get_contact_ft(self) -> None:
         """ Get current contact points and sum forces/torques on wrist's position, this is our "wrist sensor" """
         
@@ -217,7 +232,11 @@ class Controller(threading.Thread):
         total_torque_world = np.zeros(3)
         contact_pos = np.zeros(3)
         cntr = 0
-        self.cur_contact_pt = np.array(contact_pts[0][5])
+        self.cur_contact_pt = np.array(contact_pts[0][6])
+
+        if not self.printed_misalign:
+            self.get_misalign(contact_pts[0])
+            
         for pt in contact_pts:
             cntr += 1
             contact_pos = np.array(pt[5])

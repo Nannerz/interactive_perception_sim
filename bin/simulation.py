@@ -54,7 +54,7 @@ class Simulation:
                     bodyUniqueId=self.robot, 
                     linkIndex=link,
                     contactStiffness=15000.0,
-                    contactDamping=20.0,
+                    contactDamping=1.0,
                     lateralFriction=0.7,
                     spinningFriction=0.1
                 )
@@ -97,10 +97,11 @@ class Simulation:
                 objname = "YcbCrackerBox"
                 dynargs = {
                     "contactStiffness": 4000.0,
-                    "contactDamping": 20.0,
+                    "contactDamping": 1.0,
                     "lateralFriction": 0.4,
                     "spinningFriction": 0.1,
                     "mass": 0.411
+                    # "mass": 0.8
                 }
             case "meat_can":
                 objname = "YcbPottedMeatCan"
